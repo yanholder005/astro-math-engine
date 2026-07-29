@@ -1,13 +1,13 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from kerykeion import AstrologicalSubject
-from geopy.geocoders import Nominatim
+from geopy.geocoders import ArcGIS
 from timezonefinder import TimezoneFinder
 
 app = FastAPI()
 
-# Initialize our own independent location and timezone finders
-geolocator = Nominatim(user_agent="astro_funnel_backend")
+# Initialize our own independent location and timezone finders using ArcGIS
+geolocator = ArcGIS()
 tf = TimezoneFinder()
 
 class BirthData(BaseModel):
@@ -35,7 +35,7 @@ async def calculate_chart(data: BirthData):
         if not tz_str:
             raise Exception("Could not determine timezone for these coordinates.")
 
-        # 2. Pass the exact math coordinates into Kerykeion to bypass GeoNames
+        # 2. Pass the exact math coordinates into Kerykeion
         subject = AstrologicalSubject(
             data.name, 
             data.year, 
