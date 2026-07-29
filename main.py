@@ -1,8 +1,14 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from kerykeion import AstrologicalSubject
+from geopy.geocoders import Nominatim
+from timezonefinder import TimezoneFinder
 
 app = FastAPI()
+
+# Initialize our own independent location and timezone finders
+geolocator = Nominatim(user_agent="astro_funnel_backend")
+tf = TimezoneFinder()
 
 class BirthData(BaseModel):
     name: str
@@ -17,8 +23,31 @@ class BirthData(BaseModel):
 @app.post("/calculate")
 async def calculate_chart(data: BirthData):
     try:
-        # Generate the complete astrological profile
-        subject = AstrologicalSubject(data.name, data.year, data.month, data.day, data.hour, data.minute, data.city, data.nation)
+        # 1. Manually find the Latitude, Longitude, and Timezone
+        loc_query = f"{data.city}, {data.nation}"
+        location = geolocator.geocode(loc_query)
+        
+        if not location:
+            raise Exception(f"Could not find coordinates for {loc_query}.")
+            
+        tz_str = tf.timezone_at(lng=location.longitude, lat=location.latitude)
+        
+        if not tz_str:
+            raise Exception("Could not determine timezone for these coordinates.")
+
+        # 2. Pass the exact math coordinates into Kerykeion to bypass GeoNames
+        subject = AstrologicalSubject(
+            data.name, 
+            data.year, 
+            data.month, 
+            data.day, 
+            data.hour, 
+            data.minute, 
+            lng=location.longitude, 
+            lat=location.latitude, 
+            tz_str=tz_str, 
+            city=data.city
+        )
         
         planet_names = ["sun", "moon", "mercury", "venus", "mars", "jupiter", "saturn", "uranus", "neptune", "pluto", "chiron", "mean_node"]
         house_names = ["first_house", "second_house", "third_house", "fourth_house", "fifth_house", "sixth_house", "seventh_house", "eighth_house", "ninth_house", "tenth_house", "eleventh_house", "twelfth_house"]
@@ -28,11 +57,9 @@ async def calculate_chart(data: BirthData):
             "houses": {}
         }
         
-        # 1. Extract all planets dynamically
         for p in planet_names:
             obj = getattr(subject, p, None)
             if obj:
-                # Kerykeion stores this as a dictionary internally
                 full_chart["planets"][p] = {
                     "sign": obj.get("sign", ""),
                     "house": obj.get("house", ""),
@@ -41,7 +68,6 @@ async def calculate_chart(data: BirthData):
                     "retrograde": obj.get("retrograde", False)
                 }
                     
-        # 2. Extract all 12 houses dynamically
         for h in house_names:
             obj = getattr(subject, h, None)
             if obj:
@@ -51,7 +77,6 @@ async def calculate_chart(data: BirthData):
                     "absolute_degree": round(obj.get("abs_pos", 0), 2)
                 }
 
-        # 3. Attempt to pull native aspects if the library version supports it directly
         if hasattr(subject, 'aspects'):
             full_chart["aspects"] = subject.aspects()
 
