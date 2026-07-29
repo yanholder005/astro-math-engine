@@ -3,10 +3,10 @@ from pydantic import BaseModel
 from kerykeion import AstrologicalSubject
 from geopy.geocoders import ArcGIS
 from timezonefinder import TimezoneFinder
+import asyncio
 
 app = FastAPI()
 
-# Initialize our own independent location and timezone finders using ArcGIS
 geolocator = ArcGIS()
 tf = TimezoneFinder()
 
@@ -20,22 +20,28 @@ class BirthData(BaseModel):
     city: str
     nation: str
 
+# Added a basic GET route for your "Keep Awake" cron job to hit safely
+@app.get("/")
+async def health_check():
+    return {"status": "awake"}
+
 @app.post("/calculate")
 async def calculate_chart(data: BirthData):
     try:
-        # 1. Manually find the Latitude, Longitude, and Timezone
         loc_query = f"{data.city}, {data.nation}"
-        location = geolocator.geocode(loc_query)
+        
+        # Pushing the blocking geocoder into a background thread
+        location = await asyncio.to_thread(geolocator.geocode, loc_query)
         
         if not location:
             raise Exception(f"Could not find coordinates for {loc_query}.")
             
-        tz_str = tf.timezone_at(lng=location.longitude, lat=location.latitude)
+        # Pushing the blocking timezone lookup into a background thread
+        tz_str = await asyncio.to_thread(tf.timezone_at, lng=location.longitude, lat=location.latitude)
         
         if not tz_str:
             raise Exception("Could not determine timezone for these coordinates.")
 
-        # 2. Pass the exact math coordinates into Kerykeion
         subject = AstrologicalSubject(
             data.name, 
             data.year, 
@@ -52,10 +58,7 @@ async def calculate_chart(data: BirthData):
         planet_names = ["sun", "moon", "mercury", "venus", "mars", "jupiter", "saturn", "uranus", "neptune", "pluto", "chiron", "mean_node"]
         house_names = ["first_house", "second_house", "third_house", "fourth_house", "fifth_house", "sixth_house", "seventh_house", "eighth_house", "ninth_house", "tenth_house", "eleventh_house", "twelfth_house"]
         
-        full_chart = {
-            "planets": {},
-            "houses": {}
-        }
+        full_chart = {"planets": {}, "houses": {}}
         
         for p in planet_names:
             obj = getattr(subject, p, None)
