@@ -28,6 +28,7 @@ tf = TimezoneFinder()
 
 PROMPT_CACHE = {"text": "", "last_fetched": 0}
 
+# --- MODELS ---
 class BirthData(BaseModel):
     name: str
     year: int
@@ -48,6 +49,30 @@ class DiagnosticRequest(BaseModel):
     categories: list
     question: str
 
+class UpdateRequest(BaseModel):
+    email: str
+    additional_info: str
+
+# --- ADMIN ALERT FUNCTION ---
+def send_admin_error_alert(error_message, user_data):
+    try:
+        resend.api_key = os.environ.get("RESEND_API_KEY")
+        html_content = f"""
+        <h3>Urgent: Astro Funnel Error</h3>
+        <p><strong>Error Details:</strong> {error_message}</p>
+        <p><strong>User Data:</strong></p>
+        <pre>{json.dumps(user_data, indent=2)}</pre>
+        """
+        resend.Emails.send({
+            "from": "Yan Holder <yan@yanholder.com>", # Verified domain required
+            "to": ["yan@yanholder.com"],
+            "subject": "⚠️ ALARM: Funnel Generation Failed",
+            "html": html_content
+        })
+    except Exception as e:
+        print(f"Failed to send admin alert: {e}")
+
+# --- HELPER FUNCTIONS ---
 async def get_coordinates(city, nation, retries=2):
     loc_query = f"{city}, {nation}"
     for attempt in range(retries):
@@ -57,7 +82,7 @@ async def get_coordinates(city, nation, retries=2):
                 return location
         except Exception:
             await asyncio.sleep(1) 
-    raise Exception(f"We couldn't locate '{loc_query}'. Please check the spelling of your birth city and try again.")
+    raise Exception(f"We couldn't locate '{loc_query}'. Please check the spelling.")
 
 async def get_system_prompt():
     current_time = time.time()
@@ -67,13 +92,14 @@ async def get_system_prompt():
     try:
         creds_dict = json.loads(os.environ.get("GOOGLE_CREDENTIALS_JSON"))
         creds = Credentials.from_service_account_info(creds_dict, scopes=["https://www.googleapis.com/auth/spreadsheets"])
-        client = gspread.authorize(creds)
-        sheet = client.open_by_key(os.environ.get("GOOGLE_SHEET_ID")).worksheet("Settings")
-        prompt_text = sheet.acell('A1').value
+        client = await asyncio.to_thread(gspread.authorize, creds)
+        sheet = await asyncio.to_thread(client.open_by_key(os.environ.get("GOOGLE_SHEET_ID")).worksheet, "Settings")
+        prompt_text = await asyncio.to_thread(sheet.acell, 'A1')
+        prompt_val = prompt_text.value
         
-        PROMPT_CACHE["text"] = prompt_text
+        PROMPT_CACHE["text"] = prompt_val
         PROMPT_CACHE["last_fetched"] = current_time
-        return prompt_text
+        return prompt_val
     except Exception as e:
         print("Failed to fetch prompt from Sheets:", e)
         return "You are an elite clinical psychological astrologer. Provide a direct, 1-on-1 diagnostic based on the user's chart."
@@ -94,7 +120,6 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
     for p in planets:
         obj = getattr(subject, p, None)
         if obj:
-            # Re-added the degrees for accurate tension/aspect calculations by the AI
             chart["planets"][p] = {
                 "sign": obj.get("sign", ""), 
                 "house": obj.get("house", ""),
@@ -114,27 +139,20 @@ def background_tasks(data, chart_data, report_text):
         cats_string = ", ".join(data.categories)
         chart_string = json.dumps(chart_data)
         
+        # Adding an empty string for Column J so the layout is preserved
         row = [
-            data.name, 
-            data.date, 
-            data.time, 
-            f"{data.city}, {data.nation}", 
-            data.question, 
-            data.email, 
-            cats_string, 
-            chart_string, 
-            report_text
+            data.name, data.date, data.time, f"{data.city}, {data.nation}", 
+            data.question, data.email, cats_string, chart_string, report_text, ""
         ]
         sheet.append_row(row)
     except Exception as e:
         print(f"Sheet Logging Error: {e}")
+        send_admin_error_alert(f"Failed to log row to Google Sheets: {e}", {"email": data.email})
 
     # 2. Resend Email Dispatch
     try:
         resend.api_key = os.environ.get("RESEND_API_KEY")
-        
-        # Setup email variables
-        carrd_sales_link = "https://yanholder.carrd.co/#sales" # <-- Put your real sales link here
+        carrd_sales_link = "https://yanholder.carrd.co/#report"
         
         email_html = f"""
         <p>Hi {data.name},</p>
@@ -143,20 +161,40 @@ def background_tasks(data, chart_data, report_text):
         <p>{report_text.replace(chr(10), '<br/>')}</p>
         <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;"/>
         <h3>Ready to unlock the complete picture?</h3>
-        <p>You've seen the baseline. Now map the rest of your chart in deep detail.</p>
-        <a href="https://yanholder.com/#report" style="display:inline-block; padding:10px 20px; background:#000; color:#fff; text-decoration:none; border-radius:5px; font-weight:bold;">Get The Complete Blueprint</a>
+        <p>You've seen your baseline. Now map the rest of your chart in deep detail.</p>
+        <a href="{carrd_sales_link}" style="display:inline-block; padding:10px 20px; background:#000; color:#fff; text-decoration:none; border-radius:100px; font-weight:bold;">Get The Complete Blueprint</a>
         """
 
         resend.Emails.send({
             "from": "Yan Holder <yan@yanholder.com>",
-            "reply_to": "yan@yanholder.com", # <-- Set to your actual inbox so replies don't bounce
+            "reply_to": "yan@yanholder.com", 
             "to": [data.email],
             "subject": f"{data.name}, your astrology report is ready",
             "html": email_html
         })
     except Exception as e:
         print(f"Email Error: {e}")
+        send_admin_error_alert(f"Failed to send backup email: {e}", {"email": data.email})
 
+def background_update_sheet(email, extra_info):
+    try:
+        creds_dict = json.loads(os.environ.get("GOOGLE_CREDENTIALS_JSON"))
+        creds = Credentials.from_service_account_info(creds_dict, scopes=["https://www.googleapis.com/auth/spreadsheets"])
+        client = gspread.authorize(creds)
+        sheet = client.open_by_key(os.environ.get("GOOGLE_SHEET_ID")).worksheet("Sheet1") 
+        
+        # Search for email in Column F (Index 6)
+        cell = sheet.find(email, in_column=6)
+        if cell:
+            # Update Column J (Index 10) with the new info
+            sheet.update_cell(cell.row, 10, extra_info)
+        else:
+            send_admin_error_alert(f"Could not find email to update additional info.", {"email": email, "info": extra_info})
+    except Exception as e:
+        print(f"Update Sheet Error: {e}")
+        send_admin_error_alert(f"Failed to update Google Sheet with extra info: {e}", {"email": email})
+
+# --- ROUTES ---
 @app.get("/")
 async def health_check(): return {"status": "awake"}
 
@@ -183,7 +221,8 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
         report_text = ""
         for attempt in range(2):
             try:
-                response = await asyncio.to_thread(model.generate_content, f"{system_prompt}\n\n{user_prompt}")
+                # Upgraded to async generation for high concurrency
+                response = await model.generate_content_async(f"{system_prompt}\n\n{user_prompt}")
                 report_text = response.text
                 break
             except Exception as ai_err:
@@ -191,9 +230,16 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
                 await asyncio.sleep(2)
 
         bg_tasks.add_task(background_tasks, data, chart_data, report_text)
-
         return {"success": True, "report": report_text}
 
     except Exception as e:
         print(f"Diagnostic Error: {e}")
+        # Send admin alert silently in background
+        bg_tasks.add_task(send_admin_error_alert, str(e), data.dict())
         return {"success": False, "error": str(e)}
+
+@app.post("/update-lead")
+async def update_lead(data: UpdateRequest, bg_tasks: BackgroundTasks):
+    # Triggers Google Sheet search and update in the background so user doesn't wait
+    bg_tasks.add_task(background_update_sheet, data.email, data.additional_info)
+    return {"success": True}
