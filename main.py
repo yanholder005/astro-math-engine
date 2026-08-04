@@ -159,16 +159,15 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
         report_text = ""
         for attempt in range(2):
             try:
+report_text = ""
+        for attempt in range(2):
+            try:
                 response = await asyncio.to_thread(model.generate_content, f"{system_prompt}\n\n{user_prompt}")
                 report_text = response.text
                 break
-            except Exception:
-                if attempt == 1: raise Exception("AI Generation Failed")
+            except Exception as ai_err:
+                if attempt == 1: raise Exception(f"Gemini API Error: {str(ai_err)}")
                 await asyncio.sleep(2)
-
-        bg_tasks.add_task(background_tasks, data, chart_data, report_text)
-
-        return {"success": True, "report": report_text}
 
     except Exception as e:
         print(f"Diagnostic Error: {e}")
