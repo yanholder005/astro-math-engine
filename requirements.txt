@@ -3,3 +3,7 @@ uvicorn
 kerykeion
 geopy
 timezonefinder
+google-generativeai
+resend
+gspread
+google-auth
