@@ -175,7 +175,7 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
 
         system_prompt = await get_system_prompt()
         genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
-        model = genai.GenerativeModel("gemini-1.5-pro-latest") 
+        model = genai.GenerativeModel("gemini-3.1-pro-preview") 
         
         cats_str = ", ".join(data.categories)
         user_prompt = f"User Name: {data.name}\nFocus Areas: {cats_str}\nQuestion: {data.question}\nChart Data: {json.dumps(chart_data)}"
