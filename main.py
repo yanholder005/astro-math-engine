@@ -94,10 +94,17 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
     for p in planets:
         obj = getattr(subject, p, None)
         if obj:
-            chart["planets"][p] = {"sign": obj.get("sign", ""), "house": obj.get("house", "")}
+            # Re-added the degrees for accurate tension/aspect calculations by the AI
+            chart["planets"][p] = {
+                "sign": obj.get("sign", ""), 
+                "house": obj.get("house", ""),
+                "degree": round(obj.get("pos", 0), 2),
+                "absolute_degree": round(obj.get("abs_pos", 0), 2)
+            }
     return chart
 
 def background_tasks(data, chart_data, report_text):
+    # 1. Google Sheets Logging
     try:
         creds_dict = json.loads(os.environ.get("GOOGLE_CREDENTIALS_JSON"))
         creds = Credentials.from_service_account_info(creds_dict, scopes=["https://www.googleapis.com/auth/spreadsheets"])
@@ -122,13 +129,30 @@ def background_tasks(data, chart_data, report_text):
     except Exception as e:
         print(f"Sheet Logging Error: {e}")
 
+    # 2. Resend Email Dispatch
     try:
         resend.api_key = os.environ.get("RESEND_API_KEY")
+        
+        # Setup email variables
+        carrd_sales_link = "https://yanholder.carrd.co/#sales" # <-- Put your real sales link here
+        
+        email_html = f"""
+        <p>Hi {data.name},</p>
+        <p>Here is the backup copy of your astrology report:</p>
+        <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;"/>
+        <p>{report_text.replace(chr(10), '<br/>')}</p>
+        <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;"/>
+        <h3>Ready to unlock the complete picture?</h3>
+        <p>You've seen the baseline. Now map the rest of your chart in deep detail.</p>
+        <a href="{carrd_sales_link}" style="display:inline-block; padding:10px 20px; background:#000; color:#fff; text-decoration:none; border-radius:5px; font-weight:bold;">Get The Complete Blueprint</a>
+        """
+
         resend.Emails.send({
-            "from": "Yan <onboarding@resend.dev>",
+            "from": "Yan Holder <yan@yanholder.com>",
+            "reply_to": "yan@yanholder.com", # <-- Set to your actual inbox so replies don't bounce
             "to": [data.email],
-            "subject": f"{data.name}, your clinical diagnostic is ready",
-            "html": f"<p>Hi {data.name},</p><p>Here is the backup copy of your diagnostic:</p><hr/><p>{report_text.replace(chr(10), '<br/>')}</p>"
+            "subject": f"{data.name}, your astrology report is ready",
+            "html": email_html
         })
     except Exception as e:
         print(f"Email Error: {e}")
@@ -151,7 +175,7 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
 
         system_prompt = await get_system_prompt()
         genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
-        model = genai.GenerativeModel("gemini-3.1-pro-preview") 
+        model = genai.GenerativeModel("gemini-1.5-pro-latest") 
         
         cats_str = ", ".join(data.categories)
         user_prompt = f"User Name: {data.name}\nFocus Areas: {cats_str}\nQuestion: {data.question}\nChart Data: {json.dumps(chart_data)}"
