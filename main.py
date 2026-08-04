@@ -162,7 +162,7 @@ def background_tasks(data, chart_data, report_text):
         <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;"/>
         <h3>Ready to unlock the complete picture?</h3>
         <p>You've seen your baseline. Now map the rest of your chart in deep detail.</p>
-        <a href="{carrd_sales_link}" style="display:inline-block; padding:10px 20px; background:#000; color:#fff; text-decoration:none; border-radius:100px; font-weight:bold;">Get The Complete Blueprint</a>
+        <a href="https://yanholder.com/#report" style="display:inline-block; padding:10px 20px; background:#000; color:#fff; text-decoration:none; border-radius:100px; font-weight:bold;">Get The Complete Blueprint</a>
         """
 
         resend.Emails.send({
