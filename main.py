@@ -283,7 +283,7 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
                 await asyncio.sleep(2)
 
         bg_tasks.add_task(background_tasks, data, chart_data, report_text)
-        return {"success": True, "report": report_text}
+        return {"success": True, "report": report_text, "chart": chart_data}
 
     except Exception as e:
         print(f"Diagnostic Error: {e}")
