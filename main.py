@@ -66,7 +66,7 @@ def send_admin_error_alert(error_message, user_data):
         <pre>{json.dumps(user_data, indent=2)}</pre>
         """
         resend.Emails.send({
-            "from": "Yan Holder <yan@yanholder.com>", # Verified domain required
+            "from": "Yan Holder <yan@yanholder.com>",
             "to": ["yan@yanholder.com"],
             "subject": "⚠️ ALARM: Funnel Generation Failed",
             "html": html_content
@@ -117,21 +117,34 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
         lng=location.longitude, lat=location.latitude, tz_str=tz_str, city=city
     )
     
-    planets = ["sun", "moon", "mercury", "venus", "mars", "jupiter", "saturn", "uranus", "neptune", "pluto", "chiron"]
+    planets = ["sun", "moon", "mercury", "venus", "mars", "jupiter", "saturn", "uranus", "neptune", "pluto", "chiron", "true_node", "part_of_fortune"]
     chart = {"planets": {}}
     for p in planets:
         obj = getattr(subject, p, None)
         if obj:
+            if isinstance(obj, dict):
+                sign = obj.get("sign", "")
+                house = obj.get("house", "")
+                deg = round(obj.get("pos", 0), 2)
+                abs_deg = round(obj.get("abs_pos", 0), 2)
+                rx = obj.get("retrograde", False)
+            else:
+                sign = getattr(obj, "sign", "")
+                house = getattr(obj, "house", "")
+                deg = round(getattr(obj, "pos", 0), 2)
+                abs_deg = round(getattr(obj, "abs_pos", 0), 2)
+                rx = getattr(obj, "retrograde", False)
+
             chart["planets"][p] = {
-                "sign": obj.get("sign", ""), 
-                "house": obj.get("house", ""),
-                "degree": round(obj.get("pos", 0), 2),
-                "absolute_degree": round(obj.get("abs_pos", 0), 2)
+                "sign": sign,
+                "house": house,
+                "degree": deg,
+                "absolute_degree": abs_deg,
+                "retrograde": rx
             }
     return chart
 
 def background_tasks(data, chart_data, report_text):
-    # 1. Google Sheets Logging
     try:
         creds_dict = json.loads(os.environ.get("GOOGLE_CREDENTIALS_JSON"))
         creds = Credentials.from_service_account_info(creds_dict, scopes=["https://www.googleapis.com/auth/spreadsheets"])
@@ -141,7 +154,6 @@ def background_tasks(data, chart_data, report_text):
         cats_string = ", ".join(data.categories)
         chart_string = json.dumps(chart_data)
         
-        # Adding an empty string for Column J so the layout is preserved
         row = [
             data.name, data.date, data.time, f"{data.city}, {data.nation}", 
             data.question, data.email, cats_string, chart_string, report_text, ""
@@ -151,11 +163,8 @@ def background_tasks(data, chart_data, report_text):
         print(f"Sheet Logging Error: {e}")
         send_admin_error_alert(f"Failed to log row to Google Sheets: {e}", {"email": data.email})
 
-    # 2. Resend Email Dispatch
     try:
         resend.api_key = os.environ.get("RESEND_API_KEY")
-        carrd_sales_link = "https://yanholder.carrd.co/#report"
-        
         email_html = f"""
         <p>Hi {data.name},</p>
         <p>Here is the backup copy of your astrology report:</p>
@@ -185,10 +194,8 @@ def background_update_sheet(email, extra_info):
         client = gspread.authorize(creds)
         sheet = client.open_by_key(os.environ.get("GOOGLE_SHEET_ID")).worksheet("Sheet1") 
         
-        # Search for email in Column F (Index 6)
         cell = sheet.find(email, in_column=6)
         if cell:
-            # Update Column J (Index 10) with the new info
             sheet.update_cell(cell.row, 10, extra_info)
         else:
             send_admin_error_alert(f"Could not find email to update additional info.", {"email": email, "info": extra_info})
@@ -206,8 +213,6 @@ async def get_ppp_price(country: str = None):
         return {"error": "Country code required"}
 
     current_time = time.time()
-    
-    # Fetch new data from Gumroad only if the cache is empty or older than 1 hour (3600 seconds)
     if not PPP_CACHE["prices"] or (current_time - PPP_CACHE["last_fetched"]) > 3600:
         token = os.environ.get("GUMROAD_ACCESS_TOKEN")
         product_id = os.environ.get("GUMROAD_PRODUCT_ID")
@@ -218,7 +223,6 @@ async def get_ppp_price(country: str = None):
         url = f"https://api.gumroad.com/v2/products/{product_id}?access_token={token}"
         
         try:
-            # We use asyncio.to_thread so the HTTP request doesn't block your FastAPI server
             def fetch_gumroad():
                 req = urllib.request.Request(url)
                 with urllib.request.urlopen(req) as response:
@@ -227,28 +231,18 @@ async def get_ppp_price(country: str = None):
             data = await asyncio.to_thread(fetch_gumroad)
             
             if data.get("success") and "product" in data:
-                # Gumroad returns prices in CENTS (e.g., 1400 = $14.00)
                 PPP_CACHE["prices"] = data["product"].get("purchasing_power_parity_prices", {})
                 PPP_CACHE["base_price_cents"] = data["product"].get("price", 0)
                 PPP_CACHE["last_fetched"] = current_time
             else:
                 return {"error": "Could not read Gumroad PPP data"}
-                
         except Exception as e:
             print(f"Gumroad API Error: {e}")
             return {"error": "Internal Server Error"}
 
-    # Check if the country gets a discount
     ppp_cents = PPP_CACHE["prices"].get(country)
-    
-    # If the country is in Gumroad's PPP list AND the price is cheaper than the base price
     if ppp_cents and ppp_cents < PPP_CACHE["base_price_cents"]:
-        return {
-            "discountExists": True,
-            "price": ppp_cents / 100  # Convert cents back to dollars
-        }
-        
-    # Return this if no discount applies for their country
+        return {"discountExists": True, "price": ppp_cents / 100}
     return {"discountExists": False}
 
 @app.post("/calculate")
@@ -274,7 +268,6 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
         report_text = ""
         for attempt in range(2):
             try:
-                # Upgraded to async generation for high concurrency
                 response = await model.generate_content_async(f"{system_prompt}\n\n{user_prompt}")
                 report_text = response.text
                 break
@@ -287,12 +280,10 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
 
     except Exception as e:
         print(f"Diagnostic Error: {e}")
-        # Send admin alert silently in background
         bg_tasks.add_task(send_admin_error_alert, str(e), data.dict())
         return {"success": False, "error": str(e)}
 
 @app.post("/update-lead")
 async def update_lead(data: UpdateRequest, bg_tasks: BackgroundTasks):
-    # Triggers Google Sheet search and update in the background so user doesn't wait
     bg_tasks.add_task(background_update_sheet, data.email, data.additional_info)
     return {"success": True}
