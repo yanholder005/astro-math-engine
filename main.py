@@ -12,6 +12,7 @@ import asyncio
 import os
 import json
 import time
+import urllib.request
 
 app = FastAPI()
 
@@ -27,6 +28,7 @@ geolocator = ArcGIS()
 tf = TimezoneFinder()
 
 PROMPT_CACHE = {"text": "", "last_fetched": 0}
+PPP_CACHE = {"prices": {}, "base_price_cents": 0, "last_fetched": 0}
 
 # --- MODELS ---
 class BirthData(BaseModel):
@@ -197,6 +199,57 @@ def background_update_sheet(email, extra_info):
 # --- ROUTES ---
 @app.get("/")
 async def health_check(): return {"status": "awake"}
+
+@app.get("/get-ppp-price")
+async def get_ppp_price(country: str = None):
+    if not country:
+        return {"error": "Country code required"}
+
+    current_time = time.time()
+    
+    # Fetch new data from Gumroad only if the cache is empty or older than 1 hour (3600 seconds)
+    if not PPP_CACHE["prices"] or (current_time - PPP_CACHE["last_fetched"]) > 3600:
+        token = os.environ.get("GUMROAD_ACCESS_TOKEN")
+        product_id = os.environ.get("GUMROAD_PRODUCT_ID")
+        
+        if not token or not product_id:
+            return {"error": "Server missing Gumroad credentials"}
+            
+        url = f"https://api.gumroad.com/v2/products/{product_id}?access_token={token}"
+        
+        try:
+            # We use asyncio.to_thread so the HTTP request doesn't block your FastAPI server
+            def fetch_gumroad():
+                req = urllib.request.Request(url)
+                with urllib.request.urlopen(req) as response:
+                    return json.loads(response.read().decode())
+            
+            data = await asyncio.to_thread(fetch_gumroad)
+            
+            if data.get("success") and "product" in data:
+                # Gumroad returns prices in CENTS (e.g., 1400 = $14.00)
+                PPP_CACHE["prices"] = data["product"].get("purchasing_power_parity_prices", {})
+                PPP_CACHE["base_price_cents"] = data["product"].get("price", 0)
+                PPP_CACHE["last_fetched"] = current_time
+            else:
+                return {"error": "Could not read Gumroad PPP data"}
+                
+        except Exception as e:
+            print(f"Gumroad API Error: {e}")
+            return {"error": "Internal Server Error"}
+
+    # Check if the country gets a discount
+    ppp_cents = PPP_CACHE["prices"].get(country)
+    
+    # If the country is in Gumroad's PPP list AND the price is cheaper than the base price
+    if ppp_cents and ppp_cents < PPP_CACHE["base_price_cents"]:
+        return {
+            "discountExists": True,
+            "price": ppp_cents / 100  # Convert cents back to dollars
+        }
+        
+    # Return this if no discount applies for their country
+    return {"discountExists": False}
 
 @app.post("/calculate")
 async def calculate_chart(data: BirthData):
