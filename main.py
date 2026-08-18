@@ -118,7 +118,6 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
         lng=location.longitude, lat=location.latitude, tz_str=tz_str, city=city
     )
 
-    # Calculate future subject (+1 hr) to determine exact aspect trajectory (Applying vs Separating)
     dt = datetime.datetime(year, month, day, hour, minute)
     dt_future = dt + datetime.timedelta(hours=1)
     
@@ -128,7 +127,6 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
         lng=location.longitude, lat=location.latitude, tz_str=tz_str, city=city
     )
 
-    # Calculate Current UTC Transits
     now_utc = datetime.datetime.utcnow()
     now_f = now_utc + datetime.timedelta(hours=1)
     
@@ -151,25 +149,34 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
 
     def get_obj(subj, attr):
         if hasattr(subj, attr): return getattr(subj, attr)
-        # Fallbacks for Kerykeion version variations
         if attr == "part_of_fortune" and hasattr(subj, "pars_fortuna"): return getattr(subj, "pars_fortuna")
         if attr == "true_node" and hasattr(subj, "mean_node"): return getattr(subj, "mean_node")
         return None
+
+    def clean_house_name(h):
+        mapping = {
+            "First_House": "1st", "Second_House": "2nd", "Third_House": "3rd",
+            "Fourth_House": "4th", "Fifth_House": "5th", "Sixth_House": "6th",
+            "Seventh_House": "7th", "Eighth_House": "8th", "Ninth_House": "9th",
+            "Tenth_House": "10th", "Eleventh_House": "11th", "Twelfth_House": "12th"
+        }
+        return mapping.get(h, h) if h else ""
 
     def format_pos(p_name, obj):
         if not obj: return None
         if isinstance(obj, dict):
             sign = obj.get("sign", "")
-            pos = obj.get("pos", 0)
+            pos = obj.get("position", 0) # Fixed position keyword
             house = obj.get("house", "")
             rx = ", Retrograde" if obj.get("retrograde", False) else ""
         else:
             sign = getattr(obj, "sign", "")
-            pos = getattr(obj, "pos", 0)
+            pos = getattr(obj, "position", 0) # Fixed position keyword
             house = getattr(obj, "house", "")
             rx = ", Retrograde" if getattr(obj, "retrograde", False) else ""
         
-        house_str = f", in {house} House" if house else ""
+        house_clean = clean_house_name(house)
+        house_str = f", in {house_clean} House" if house_clean else ""
         return f"{p_name} in {sign} {deg_to_d_m(pos)}{rx}{house_str}"
 
     points = [
@@ -182,23 +189,20 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
 
     lines = []
     
-    # Render Natal Planets & Specific Objects
     for d_name, a_name in points:
         obj = get_obj(subject, a_name)
         if obj:
             fmt = format_pos(d_name, obj)
             if fmt: lines.append(fmt)
 
-    # Render Core Angles
     angles = [("ASC", "first_house"), ("MC", "tenth_house")]
     for d_name, a_name in angles:
         obj = get_obj(subject, a_name)
         if obj:
-            pos = getattr(obj, "pos", 0) if not isinstance(obj, dict) else obj.get("pos", 0)
+            pos = getattr(obj, "position", 0) if not isinstance(obj, dict) else obj.get("position", 0)
             sign = getattr(obj, "sign", "") if not isinstance(obj, dict) else obj.get("sign", "")
             lines.append(f"{d_name} in {sign} {deg_to_d_m(pos)}")
 
-    # Render Houses
     houses_map = [
         ("1st House", "first_house"), ("2nd House", "second_house"), ("3rd House", "third_house"),
         ("4th House", "fourth_house"), ("5th House", "fifth_house"), ("6th House", "sixth_house"),
@@ -208,11 +212,10 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
     for d_name, a_name in houses_map:
         obj = get_obj(subject, a_name)
         if obj:
-            pos = getattr(obj, "pos", 0) if not isinstance(obj, dict) else obj.get("pos", 0)
+            pos = getattr(obj, "position", 0) if not isinstance(obj, dict) else obj.get("position", 0)
             sign = getattr(obj, "sign", "") if not isinstance(obj, dict) else obj.get("sign", "")
             lines.append(f"{d_name} in {sign} {deg_to_d_m(pos)}")
 
-    # Map Absolute Positions for Aspect Geometry
     def get_abs_pos(obj):
         if not obj: return None
         return getattr(obj, "abs_pos", 0) if not isinstance(obj, dict) else obj.get("abs_pos", 0)
@@ -261,7 +264,6 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
         d = abs(p1 - p2)
         return min(d, 360 - d)
 
-    # 1. Natal Aspects
     aspects_lines = []
     for i in range(len(entities)):
         for j in range(i + 1, len(entities)):
@@ -273,7 +275,6 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
             diff = get_diff(e1["abs_pos"], e2["abs_pos"])
             diff_f = get_diff(e1["abs_pos_f"], e2["abs_pos_f"])
             
-            # Dynamic Orb Geometry
             max_orb = 10 if (e1["is_luminary"] or e2["is_luminary"]) else 8
             points_names = ["North Node", "Lilith", "Chiron", "Fortune", "Vertex", "Ascendant", "MC", "DSC", "IC"]
             if e1["name"] in points_names or e2["name"] in points_names: max_orb = 6
@@ -290,7 +291,6 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
 
     lines.extend(aspects_lines)
 
-    # 2. Transit to Natal Aspects
     transit_entities = []
     transit_points = [
         ("Sun", "sun"), ("Moon", "moon"), ("Mercury", "mercury"), ("Venus", "venus"), 
@@ -313,10 +313,8 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
         for t_ent in transit_entities:
             for n_ent in entities:
                 diff = get_diff(t_ent["abs_pos"], n_ent["abs_pos"])
-                # Compare moving transit to fixed static natal position for applying/separating
                 diff_f = get_diff(t_ent["abs_pos_f"], n_ent["abs_pos"]) 
                 
-                # Tight, predictive orbs for transits (3° for luminaries, 2° for everything else)
                 max_orb = 3 if t_ent["name"] in ["Sun", "Moon"] else 2
                 
                 for asp_name, asp_angle in aspect_types:
@@ -441,7 +439,6 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
         year, month, day = map(int, data.date.split("-"))
         hour, minute = map(int, data.time.split(":"))
         
-        # Unambiguous Date Format creation (e.g., "August 18, 2026")
         formatted_dob = datetime.date(year, month, day).strftime("%B %d, %Y")
 
         chart_data = await get_chart_data(data.name, year, month, day, hour, minute, data.city, data.nation)
@@ -452,7 +449,6 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
         
         cats_str = ", ".join(data.categories)
         
-        # Inject the formatted DOB to avoid day/month AI confusion
         user_prompt = f"User Name: {data.name}\nDate of Birth: {formatted_dob}\nFocus Areas: {cats_str}\nQuestion: {data.question}\nChart Data:\n{chart_data}"
         
         report_text = ""
