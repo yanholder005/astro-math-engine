@@ -557,7 +557,11 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
         
         cats_str = ", ".join(data.categories)
         
-        user_prompt = f"User Name: {data.name}\nDate of Birth: {formatted_dob}\nFocus Areas: {cats_str}\nQuestion: {data.question}\nChart Data:\n{chart_data}"
+        # We grab the explicit current date from the server to inject into the prompt
+        now_utc = datetime.datetime.utcnow()
+        current_date_str = now_utc.strftime("%B %d, %Y")
+        
+        user_prompt = f"User Name: {data.name}\nDate of Birth: {formatted_dob}\nCurrent Date: {current_date_str}\nFocus Areas: {cats_str}\nQuestion: {data.question}\nChart Data:\n{chart_data}"
         
         report_text = ""
         for attempt in range(3):
