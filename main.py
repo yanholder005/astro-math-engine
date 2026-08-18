@@ -365,31 +365,31 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
 
     lines.extend(aspects_lines)
 
-    # Automated Hellenistic Annual Profections Engine
+    # BULLETPROOF Hellenistic Annual Profections Engine
     age = now_utc.year - year - ((now_utc.month, now_utc.day) < (month, day))
     prof_house_num = (age % 12) + 1
     
-    asc_obj = get_obj(subject, "first_house")
-    asc_sign = getattr(asc_obj, "sign", "") if not isinstance(asc_obj, dict) else asc_obj.get("sign", "")
-    asc_sign = asc_sign.capitalize() if isinstance(asc_sign, str) else "" 
+    asc_abs = get_abs_pos(get_obj(subject, "first_house"))
     
-    signs_list = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"]
-    
-    rulers_trad = {
-        "Aries": "Mars", "Taurus": "Venus", "Gemini": "Mercury", "Cancer": "Moon", 
-        "Leo": "Sun", "Virgo": "Mercury", "Libra": "Venus", "Scorpio": "Mars", 
-        "Sagittarius": "Jupiter", "Capricorn": "Saturn", "Aquarius": "Saturn", "Pisces": "Jupiter"
-    }
-    
-    rulers_mod = {
-        "Aries": "Mars", "Taurus": "Venus", "Gemini": "Mercury", "Cancer": "Moon", 
-        "Leo": "Sun", "Virgo": "Mercury", "Libra": "Venus", "Scorpio": "Pluto", 
-        "Sagittarius": "Jupiter", "Capricorn": "Saturn", "Aquarius": "Uranus", "Pisces": "Neptune"
-    }
-    
-    if not (hour == 12 and minute == 0) and asc_sign in signs_list:
-        asc_idx = signs_list.index(asc_sign)
-        prof_sign_idx = (asc_idx + prof_house_num - 1) % 12
+    if not (hour == 12 and minute == 0) and asc_abs is not None:
+        signs_list = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"]
+        
+        rulers_trad = {
+            "Aries": "Mars", "Taurus": "Venus", "Gemini": "Mercury", "Cancer": "Moon", 
+            "Leo": "Sun", "Virgo": "Mercury", "Libra": "Venus", "Scorpio": "Mars", 
+            "Sagittarius": "Jupiter", "Capricorn": "Saturn", "Aquarius": "Saturn", "Pisces": "Jupiter"
+        }
+        rulers_mod = {
+            "Aries": "Mars", "Taurus": "Venus", "Gemini": "Mercury", "Cancer": "Moon", 
+            "Leo": "Sun", "Virgo": "Mercury", "Libra": "Venus", "Scorpio": "Pluto", 
+            "Sagittarius": "Jupiter", "Capricorn": "Saturn", "Aquarius": "Uranus", "Pisces": "Neptune"
+        }
+        
+        # Manually calculate the precise sign index from the absolute degree to prevent library object bugs
+        asc_sign_idx = int(asc_abs / 30)
+        asc_sign = signs_list[asc_sign_idx]
+        
+        prof_sign_idx = (asc_sign_idx + prof_house_num - 1) % 12
         prof_sign = signs_list[prof_sign_idx]
         
         t_lord_trad = rulers_trad.get(prof_sign, "")
@@ -404,7 +404,7 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
         
         lines.append(f"\n=== ANNUAL PROFECTION ===")
         lines.append(f"Current Age: {age}")
-        lines.append(f"Base Ascendant Calculated: {asc_sign}")
+        lines.append(f"Base Ascendant Calculated: {asc_sign} (at {deg_to_d_m(asc_abs % 30)})")
         lines.append(f"Profection Year: {prof_house_num}{suffix} House")
         lines.append(f"Profection Sign: {prof_sign}")
         lines.append(f"Time Lord: {time_lord_final}")
