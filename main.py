@@ -15,6 +15,7 @@ import time
 import urllib.request
 import datetime
 import random
+import re
 
 app = FastAPI()
 
@@ -520,7 +521,6 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
         system_prompt = await get_system_prompt()
         genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
         
-        # Upgraded to 3.7-Flash
         model = genai.GenerativeModel("gemini-3.7-flash") 
         
         cats_str = ", ".join(data.categories)
@@ -532,12 +532,12 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
         report_text = ""
         for attempt in range(3):
             try:
-                # Force High Thinking Mode
-                response = await model.generate_content_async(
-                    f"{system_prompt}\n\n{user_prompt}",
-                    generation_config={"thinking_config": {"type": "high"}}
-                )
-                report_text = response.text
+                # Basic call; thinking forced via prompt to avoid SDK errors
+                response = await model.generate_content_async(f"{system_prompt}\n\n{user_prompt}")
+                
+                # Regex safely extracts and deletes the <thinking> block before user sees it
+                raw_text = response.text
+                report_text = re.sub(r'<thinking>.*?</thinking>', '', raw_text, flags=re.DOTALL).strip()
                 break
             except Exception as ai_err:
                 if attempt == 2: raise Exception(f"Gemini API Error: {str(ai_err)}")
