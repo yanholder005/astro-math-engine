@@ -14,6 +14,7 @@ import json
 import time
 import urllib.request
 import datetime
+import random
 
 app = FastAPI()
 
@@ -25,11 +26,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-geolocator = ArcGIS()
+geolocator = ArcGIS(timeout=5)
 tf = TimezoneFinder()
 
 PROMPT_CACHE = {"text": "", "last_fetched": 0}
 PPP_CACHE = {"prices": {}, "base_price_cents": 0, "last_fetched": 0}
+GSPREAD_CLIENT = None  # Global cache for Google Sheets Auth
 
 # --- MODELS ---
 class BirthData(BaseModel):
@@ -76,7 +78,30 @@ def send_admin_error_alert(error_message, user_data):
         print(f"Failed to send admin alert: {e}")
 
 # --- HELPER FUNCTIONS ---
-async def get_coordinates(city, nation, retries=2):
+def get_gspread_client():
+    """Authenticates once and caches the client to prevent Google API rate limits"""
+    global GSPREAD_CLIENT
+    if GSPREAD_CLIENT is None:
+        try:
+            creds_dict = json.loads(os.environ.get("GOOGLE_CREDENTIALS_JSON"))
+            creds = Credentials.from_service_account_info(creds_dict, scopes=["https://www.googleapis.com/auth/spreadsheets"])
+            GSPREAD_CLIENT = gspread.authorize(creds)
+        except Exception as e:
+            print(f"Failed to initialize Google Sheets Client: {e}")
+            raise
+    return GSPREAD_CLIENT
+
+def exponential_backoff_retry(func, *args, max_retries=4, **kwargs):
+    """Executes Google Sheets operations with retry logic for 429 Quota errors"""
+    for attempt in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise e
+            time.sleep((2 ** attempt) + random.uniform(0, 1))
+
+async def get_coordinates(city, nation, retries=3):
     loc_query = f"{city}, {nation}"
     for attempt in range(retries):
         try:
@@ -93,12 +118,11 @@ async def get_system_prompt():
         return PROMPT_CACHE["text"]
     
     try:
-        creds_dict = json.loads(os.environ.get("GOOGLE_CREDENTIALS_JSON"))
-        creds = Credentials.from_service_account_info(creds_dict, scopes=["https://www.googleapis.com/auth/spreadsheets"])
-        client = await asyncio.to_thread(gspread.authorize, creds)
+        client = await asyncio.to_thread(get_gspread_client)
         sheet = await asyncio.to_thread(client.open_by_key(os.environ.get("GOOGLE_SHEET_ID")).worksheet, "Settings")
-        prompt_text = await asyncio.to_thread(sheet.acell, 'A1')
-        prompt_val = prompt_text.value
+        
+        def fetch_cell(): return sheet.acell('A1').value
+        prompt_val = await asyncio.to_thread(exponential_backoff_retry, fetch_cell)
         
         PROMPT_CACHE["text"] = prompt_val
         PROMPT_CACHE["last_fetched"] = current_time
@@ -113,7 +137,9 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
     if not tz_str:
         raise Exception("Could not determine timezone for this location.")
 
-    subject = AstrologicalSubject(
+    # Offload heavy math to separate threads to prevent Event Loop blocking
+    subject = await asyncio.to_thread(
+        AstrologicalSubject,
         name, year, month, day, hour, minute, 
         lng=location.longitude, lat=location.latitude, tz_str=tz_str, city=city
     )
@@ -121,7 +147,8 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
     dt = datetime.datetime(year, month, day, hour, minute)
     dt_future = dt + datetime.timedelta(hours=1)
     
-    subject_future = AstrologicalSubject(
+    subject_future = await asyncio.to_thread(
+        AstrologicalSubject,
         name + "_future", dt_future.year, dt_future.month, dt_future.day, 
         dt_future.hour, dt_future.minute, 
         lng=location.longitude, lat=location.latitude, tz_str=tz_str, city=city
@@ -130,11 +157,13 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
     now_utc = datetime.datetime.utcnow()
     now_f = now_utc + datetime.timedelta(hours=1)
     
-    subject_transit = AstrologicalSubject(
+    subject_transit = await asyncio.to_thread(
+        AstrologicalSubject,
         "Transit", now_utc.year, now_utc.month, now_utc.day, now_utc.hour, now_utc.minute, 
         lng=0.0, lat=51.5, tz_str="UTC", city="London"
     )
-    subject_transit_f = AstrologicalSubject(
+    subject_transit_f = await asyncio.to_thread(
+        AstrologicalSubject,
         "Transit_F", now_f.year, now_f.month, now_f.day, now_f.hour, now_f.minute, 
         lng=0.0, lat=51.5, tz_str="UTC", city="London"
     )
@@ -151,11 +180,9 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
         if hasattr(subj, attr): 
             return getattr(subj, attr)
         
-        # Fortune & Node Fallbacks
         if attr == "part_of_fortune" and hasattr(subj, "pars_fortuna"): return getattr(subj, "pars_fortuna")
         if attr == "true_node" and hasattr(subj, "mean_node"): return getattr(subj, "mean_node")
         
-        # Vertex Dynamic Mathematical Fallback
         if attr == "vertex":
             if hasattr(subj, "_ascmc") and subj._ascmc and len(subj._ascmc) > 3:
                 v_abs = subj._ascmc[3]
@@ -163,7 +190,6 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
                 v_sign = signs[int(v_abs / 30)]
                 v_pos = v_abs % 30
                 
-                # Dynamically calculate which House the Vertex is in
                 v_house = ""
                 houses_list = ["first_house", "second_house", "third_house", "fourth_house", "fifth_house", "sixth_house", "seventh_house", "eighth_house", "ninth_house", "tenth_house", "eleventh_house", "twelfth_house"]
                 cusps = []
@@ -362,19 +388,17 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
 
 def background_tasks(data, chart_data, report_text):
     try:
-        creds_dict = json.loads(os.environ.get("GOOGLE_CREDENTIALS_JSON"))
-        creds = Credentials.from_service_account_info(creds_dict, scopes=["https://www.googleapis.com/auth/spreadsheets"])
-        client = gspread.authorize(creds)
+        client = get_gspread_client()
         sheet = client.open_by_key(os.environ.get("GOOGLE_SHEET_ID")).worksheet("Sheet1") 
         
         cats_string = ", ".join(data.categories)
-        chart_string = chart_data
-        
         row = [
             data.name, data.date, data.time, f"{data.city}, {data.nation}", 
-            data.question, data.email, cats_string, chart_string, report_text, ""
+            data.question, data.email, cats_string, chart_data, report_text, ""
         ]
-        sheet.append_row(row)
+        
+        def append(): sheet.append_row(row)
+        exponential_backoff_retry(append)
     except Exception as e:
         print(f"Sheet Logging Error: {e}")
         send_admin_error_alert(f"Failed to log row to Google Sheets: {e}", {"email": data.email})
@@ -405,16 +429,17 @@ def background_tasks(data, chart_data, report_text):
 
 def background_update_sheet(email, extra_info):
     try:
-        creds_dict = json.loads(os.environ.get("GOOGLE_CREDENTIALS_JSON"))
-        creds = Credentials.from_service_account_info(creds_dict, scopes=["https://www.googleapis.com/auth/spreadsheets"])
-        client = gspread.authorize(creds)
+        client = get_gspread_client()
         sheet = client.open_by_key(os.environ.get("GOOGLE_SHEET_ID")).worksheet("Sheet1") 
         
-        cell = sheet.find(email, in_column=6)
-        if cell:
-            sheet.update_cell(cell.row, 10, extra_info)
-        else:
-            send_admin_error_alert(f"Could not find email to update additional info.", {"email": email, "info": extra_info})
+        def find_and_update():
+            cell = sheet.find(email, in_column=6)
+            if cell:
+                sheet.update_cell(cell.row, 10, extra_info)
+            else:
+                send_admin_error_alert(f"Could not find email to update additional info.", {"email": email, "info": extra_info})
+        
+        exponential_backoff_retry(find_and_update)
     except Exception as e:
         print(f"Update Sheet Error: {e}")
         send_admin_error_alert(f"Failed to update Google Sheet with extra info: {e}", {"email": email})
@@ -440,8 +465,8 @@ async def get_ppp_price(country: str = None):
         
         try:
             def fetch_gumroad():
-                req = urllib.request.Request(url)
-                with urllib.request.urlopen(req) as response:
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, timeout=5) as response:
                     return json.loads(response.read().decode())
             
             data = await asyncio.to_thread(fetch_gumroad)
@@ -486,13 +511,13 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
         user_prompt = f"User Name: {data.name}\nDate of Birth: {formatted_dob}\nFocus Areas: {cats_str}\nQuestion: {data.question}\nChart Data:\n{chart_data}"
         
         report_text = ""
-        for attempt in range(2):
+        for attempt in range(3):
             try:
                 response = await model.generate_content_async(f"{system_prompt}\n\n{user_prompt}")
                 report_text = response.text
                 break
             except Exception as ai_err:
-                if attempt == 1: raise Exception(f"Gemini API Error: {str(ai_err)}")
+                if attempt == 2: raise Exception(f"Gemini API Error: {str(ai_err)}")
                 await asyncio.sleep(2)
 
         bg_tasks.add_task(background_tasks, data, chart_data, report_text)
