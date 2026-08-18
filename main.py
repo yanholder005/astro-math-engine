@@ -184,7 +184,6 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
         if not obj and attr == "true_node":
             obj = getattr(subj, "mean_node", None)
             
-        # Bulletproof Manual Fortune Calculation
         if not obj and attr == "part_of_fortune":
             asc_obj = getattr(subj, "first_house", None)
             sun_obj = getattr(subj, "sun", None)
@@ -202,7 +201,6 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
                 signs = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"]
                 return {"sign": signs[int(f_abs / 30)], "position": f_abs % 30, "abs_pos": f_abs}
 
-        # Bulletproof Vertex Extraction
         if not obj and attr == "vertex":
             v_abs = None
             if hasattr(subj, "_ascmc") and subj._ascmc and len(subj._ascmc) > 3:
@@ -235,7 +233,6 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
         abs_pos = obj.get("abs_pos", None) if is_dict else getattr(obj, "abs_pos", None)
         rx = ", Retrograde" if (obj.get("retrograde", False) if is_dict else getattr(obj, "retrograde", False)) else ""
         
-        # Universal Dynamic House Resolution Engine
         if not house and abs_pos is not None:
             houses_list = ["first_house", "second_house", "third_house", "fourth_house", "fifth_house", "sixth_house", "seventh_house", "eighth_house", "ninth_house", "tenth_house", "eleventh_house", "twelfth_house"]
             cusps = []
@@ -367,37 +364,6 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
                     break 
 
     lines.extend(aspects_lines)
-
-    # Automated Hellenistic Annual Profections Engine
-    age = now_utc.year - year - ((now_utc.month, now_utc.day) < (month, day))
-    prof_house_num = (age % 12) + 1
-    
-    asc_obj = get_obj(subject, "first_house")
-    asc_sign = getattr(asc_obj, "sign", "") if not isinstance(asc_obj, dict) else asc_obj.get("sign", "")
-    
-    signs_list = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"]
-    rulers_map = {
-        "Aries": "Mars", "Taurus": "Venus", "Gemini": "Mercury", "Cancer": "Moon", 
-        "Leo": "Sun", "Virgo": "Mercury", "Libra": "Venus", "Scorpio": "Mars", 
-        "Sagittarius": "Jupiter", "Capricorn": "Saturn", "Aquarius": "Saturn", "Pisces": "Jupiter"
-    }
-    
-    if not (hour == 12 and minute == 0) and asc_sign in signs_list:
-        asc_idx = signs_list.index(asc_sign)
-        prof_sign_idx = (asc_idx + prof_house_num - 1) % 12
-        prof_sign = signs_list[prof_sign_idx]
-        time_lord = rulers_map.get(prof_sign, "")
-        
-        suffix = "th"
-        if prof_house_num == 1: suffix = "st"
-        elif prof_house_num == 2: suffix = "nd"
-        elif prof_house_num == 3: suffix = "rd"
-        
-        lines.append(f"\n=== ANNUAL PROFECTION ===")
-        lines.append(f"Current Age: {age}")
-        lines.append(f"Profection Year: {prof_house_num}{suffix} House")
-        lines.append(f"Profection Sign: {prof_sign}")
-        lines.append(f"Time Lord: {time_lord}")
 
     transit_entities = []
     transit_points = [
@@ -553,11 +519,11 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
 
         system_prompt = await get_system_prompt()
         genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
-        model = genai.GenerativeModel("gemini-3.5-flash-lite") 
+        
+        # Upgraded to 3.7-Flash
+        model = genai.GenerativeModel("gemini-3.7-flash") 
         
         cats_str = ", ".join(data.categories)
-        
-        # We grab the explicit current date from the server to inject into the prompt
         now_utc = datetime.datetime.utcnow()
         current_date_str = now_utc.strftime("%B %d, %Y")
         
@@ -566,7 +532,11 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
         report_text = ""
         for attempt in range(3):
             try:
-                response = await model.generate_content_async(f"{system_prompt}\n\n{user_prompt}")
+                # Force High Thinking Mode
+                response = await model.generate_content_async(
+                    f"{system_prompt}\n\n{user_prompt}",
+                    generation_config={"thinking_config": {"type": "high"}}
+                )
                 report_text = response.text
                 break
             except Exception as ai_err:
