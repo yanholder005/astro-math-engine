@@ -15,7 +15,6 @@ import time
 import urllib.request
 import datetime
 import random
-import re
 
 app = FastAPI()
 
@@ -366,6 +365,37 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
 
     lines.extend(aspects_lines)
 
+    # Automated Hellenistic Annual Profections Engine
+    age = now_utc.year - year - ((now_utc.month, now_utc.day) < (month, day))
+    prof_house_num = (age % 12) + 1
+    
+    asc_obj = get_obj(subject, "first_house")
+    asc_sign = getattr(asc_obj, "sign", "") if not isinstance(asc_obj, dict) else asc_obj.get("sign", "")
+    
+    signs_list = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"]
+    rulers_map = {
+        "Aries": "Mars", "Taurus": "Venus", "Gemini": "Mercury", "Cancer": "Moon", 
+        "Leo": "Sun", "Virgo": "Mercury", "Libra": "Venus", "Scorpio": "Mars", 
+        "Sagittarius": "Jupiter", "Capricorn": "Saturn", "Aquarius": "Saturn", "Pisces": "Jupiter"
+    }
+    
+    if not (hour == 12 and minute == 0) and asc_sign in signs_list:
+        asc_idx = signs_list.index(asc_sign)
+        prof_sign_idx = (asc_idx + prof_house_num - 1) % 12
+        prof_sign = signs_list[prof_sign_idx]
+        time_lord = rulers_map.get(prof_sign, "")
+        
+        suffix = "th"
+        if prof_house_num == 1: suffix = "st"
+        elif prof_house_num == 2: suffix = "nd"
+        elif prof_house_num == 3: suffix = "rd"
+        
+        lines.append(f"\n=== ANNUAL PROFECTION ===")
+        lines.append(f"Current Age: {age}")
+        lines.append(f"Profection Year: {prof_house_num}{suffix} House")
+        lines.append(f"Profection Sign: {prof_sign}")
+        lines.append(f"Time Lord: {time_lord}")
+
     transit_entities = []
     transit_points = [
         ("Sun", "sun"), ("Moon", "moon"), ("Mercury", "mercury"), ("Venus", "venus"), 
@@ -521,7 +551,8 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
         system_prompt = await get_system_prompt()
         genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
         
-        model = genai.GenerativeModel("gemini-3.7-flash") 
+        # Reverted back to the lightning fast lite model so your site won't hang
+        model = genai.GenerativeModel("gemini-3.5-flash-lite") 
         
         cats_str = ", ".join(data.categories)
         now_utc = datetime.datetime.utcnow()
@@ -532,12 +563,8 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
         report_text = ""
         for attempt in range(3):
             try:
-                # Basic call; thinking forced via prompt to avoid SDK errors
                 response = await model.generate_content_async(f"{system_prompt}\n\n{user_prompt}")
-                
-                # Regex safely extracts and deletes the <thinking> block before user sees it
-                raw_text = response.text
-                report_text = re.sub(r'<thinking>.*?</thinking>', '', raw_text, flags=re.DOTALL).strip()
+                report_text = response.text
                 break
             except Exception as ai_err:
                 if attempt == 2: raise Exception(f"Gemini API Error: {str(ai_err)}")
