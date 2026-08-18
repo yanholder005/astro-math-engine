@@ -371,19 +371,31 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
     
     asc_obj = get_obj(subject, "first_house")
     asc_sign = getattr(asc_obj, "sign", "") if not isinstance(asc_obj, dict) else asc_obj.get("sign", "")
+    asc_sign = asc_sign.capitalize() if isinstance(asc_sign, str) else "" # Safety net for index mapping
     
     signs_list = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"]
-    rulers_map = {
+    
+    rulers_trad = {
         "Aries": "Mars", "Taurus": "Venus", "Gemini": "Mercury", "Cancer": "Moon", 
         "Leo": "Sun", "Virgo": "Mercury", "Libra": "Venus", "Scorpio": "Mars", 
         "Sagittarius": "Jupiter", "Capricorn": "Saturn", "Aquarius": "Saturn", "Pisces": "Jupiter"
+    }
+    
+    rulers_mod = {
+        "Aries": "Mars", "Taurus": "Venus", "Gemini": "Mercury", "Cancer": "Moon", 
+        "Leo": "Sun", "Virgo": "Mercury", "Libra": "Venus", "Scorpio": "Pluto", 
+        "Sagittarius": "Jupiter", "Capricorn": "Saturn", "Aquarius": "Uranus", "Pisces": "Neptune"
     }
     
     if not (hour == 12 and minute == 0) and asc_sign in signs_list:
         asc_idx = signs_list.index(asc_sign)
         prof_sign_idx = (asc_idx + prof_house_num - 1) % 12
         prof_sign = signs_list[prof_sign_idx]
-        time_lord = rulers_map.get(prof_sign, "")
+        
+        t_lord_trad = rulers_trad.get(prof_sign, "")
+        t_lord_mod = rulers_mod.get(prof_sign, "")
+        
+        time_lord_final = t_lord_trad if t_lord_trad == t_lord_mod else f"{t_lord_trad} (Traditional) / {t_lord_mod} (Modern)"
         
         suffix = "th"
         if prof_house_num == 1: suffix = "st"
@@ -394,7 +406,7 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
         lines.append(f"Current Age: {age}")
         lines.append(f"Profection Year: {prof_house_num}{suffix} House")
         lines.append(f"Profection Sign: {prof_sign}")
-        lines.append(f"Time Lord: {time_lord}")
+        lines.append(f"Time Lord: {time_lord_final}")
 
     transit_entities = []
     transit_points = [
@@ -551,7 +563,7 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
         system_prompt = await get_system_prompt()
         genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
         
-        # Reverted back to the lightning fast lite model so your site won't hang
+        # Kept safely on Flash Lite to prevent hanging/timeouts
         model = genai.GenerativeModel("gemini-3.5-flash-lite") 
         
         cats_str = ", ".join(data.categories)
