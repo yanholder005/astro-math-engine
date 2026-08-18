@@ -13,6 +13,7 @@ import os
 import json
 import time
 import urllib.request
+import datetime
 
 app = FastAPI()
 
@@ -116,33 +117,217 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
         name, year, month, day, hour, minute, 
         lng=location.longitude, lat=location.latitude, tz_str=tz_str, city=city
     )
-    
-    planets = ["sun", "moon", "mercury", "venus", "mars", "jupiter", "saturn", "uranus", "neptune", "pluto", "chiron", "true_node", "part_of_fortune"]
-    chart = {"planets": {}}
-    for p in planets:
-        obj = getattr(subject, p, None)
-        if obj:
-            if isinstance(obj, dict):
-                sign = obj.get("sign", "")
-                house = obj.get("house", "")
-                deg = round(obj.get("pos", 0), 2)
-                abs_deg = round(obj.get("abs_pos", 0), 2)
-                rx = obj.get("retrograde", False)
-            else:
-                sign = getattr(obj, "sign", "")
-                house = getattr(obj, "house", "")
-                deg = round(getattr(obj, "pos", 0), 2)
-                abs_deg = round(getattr(obj, "abs_pos", 0), 2)
-                rx = getattr(obj, "retrograde", False)
 
-            chart["planets"][p] = {
-                "sign": sign,
-                "house": house,
-                "degree": deg,
-                "absolute_degree": abs_deg,
-                "retrograde": rx
-            }
-    return chart
+    # Calculate future subject (+1 hr) to determine exact aspect trajectory (Applying vs Separating)
+    dt = datetime.datetime(year, month, day, hour, minute)
+    dt_future = dt + datetime.timedelta(hours=1)
+    
+    subject_future = AstrologicalSubject(
+        name + "_future", dt_future.year, dt_future.month, dt_future.day, 
+        dt_future.hour, dt_future.minute, 
+        lng=location.longitude, lat=location.latitude, tz_str=tz_str, city=city
+    )
+
+    # Calculate Current UTC Transits
+    now_utc = datetime.datetime.utcnow()
+    now_f = now_utc + datetime.timedelta(hours=1)
+    
+    subject_transit = AstrologicalSubject(
+        "Transit", now_utc.year, now_utc.month, now_utc.day, now_utc.hour, now_utc.minute, 
+        lng=0.0, lat=51.5, tz_str="UTC", city="London"
+    )
+    subject_transit_f = AstrologicalSubject(
+        "Transit_F", now_f.year, now_f.month, now_f.day, now_f.hour, now_f.minute, 
+        lng=0.0, lat=51.5, tz_str="UTC", city="London"
+    )
+
+    def deg_to_d_m(deg):
+        d = int(deg)
+        m = int(round((deg - d) * 60))
+        if m == 60:
+            d += 1
+            m = 0
+        return f"{d}°{m:02d}’"
+
+    def get_obj(subj, attr):
+        if hasattr(subj, attr): return getattr(subj, attr)
+        # Fallbacks for Kerykeion version variations
+        if attr == "part_of_fortune" and hasattr(subj, "pars_fortuna"): return getattr(subj, "pars_fortuna")
+        if attr == "true_node" and hasattr(subj, "mean_node"): return getattr(subj, "mean_node")
+        return None
+
+    def format_pos(p_name, obj):
+        if not obj: return None
+        if isinstance(obj, dict):
+            sign = obj.get("sign", "")
+            pos = obj.get("pos", 0)
+            house = obj.get("house", "")
+            rx = ", Retrograde" if obj.get("retrograde", False) else ""
+        else:
+            sign = getattr(obj, "sign", "")
+            pos = getattr(obj, "pos", 0)
+            house = getattr(obj, "house", "")
+            rx = ", Retrograde" if getattr(obj, "retrograde", False) else ""
+        
+        house_str = f", in {house} House" if house else ""
+        return f"{p_name} in {sign} {deg_to_d_m(pos)}{rx}{house_str}"
+
+    points = [
+        ("Sun", "sun"), ("Moon", "moon"), ("Mercury", "mercury"), ("Venus", "venus"), 
+        ("Mars", "mars"), ("Jupiter", "jupiter"), ("Saturn", "saturn"), ("Uranus", "uranus"), 
+        ("Neptune", "neptune"), ("Pluto", "pluto"), ("North Node", "true_node"), 
+        ("Lilith", "lilith"), ("Chiron", "chiron"), ("Fortune", "part_of_fortune"), 
+        ("Vertex", "vertex")
+    ]
+
+    lines = []
+    
+    # Render Natal Planets & Specific Objects
+    for d_name, a_name in points:
+        obj = get_obj(subject, a_name)
+        if obj:
+            fmt = format_pos(d_name, obj)
+            if fmt: lines.append(fmt)
+
+    # Render Core Angles
+    angles = [("ASC", "first_house"), ("MC", "tenth_house")]
+    for d_name, a_name in angles:
+        obj = get_obj(subject, a_name)
+        if obj:
+            pos = getattr(obj, "pos", 0) if not isinstance(obj, dict) else obj.get("pos", 0)
+            sign = getattr(obj, "sign", "") if not isinstance(obj, dict) else obj.get("sign", "")
+            lines.append(f"{d_name} in {sign} {deg_to_d_m(pos)}")
+
+    # Render Houses
+    houses_map = [
+        ("1st House", "first_house"), ("2nd House", "second_house"), ("3rd House", "third_house"),
+        ("4th House", "fourth_house"), ("5th House", "fifth_house"), ("6th House", "sixth_house"),
+        ("7th House", "seventh_house"), ("8th House", "eighth_house"), ("9th House", "ninth_house"),
+        ("10th House", "tenth_house"), ("11th House", "eleventh_house"), ("12th House", "twelfth_house"),
+    ]
+    for d_name, a_name in houses_map:
+        obj = get_obj(subject, a_name)
+        if obj:
+            pos = getattr(obj, "pos", 0) if not isinstance(obj, dict) else obj.get("pos", 0)
+            sign = getattr(obj, "sign", "") if not isinstance(obj, dict) else obj.get("sign", "")
+            lines.append(f"{d_name} in {sign} {deg_to_d_m(pos)}")
+
+    # Map Absolute Positions for Aspect Geometry
+    def get_abs_pos(obj):
+        if not obj: return None
+        return getattr(obj, "abs_pos", 0) if not isinstance(obj, dict) else obj.get("abs_pos", 0)
+
+    h1 = get_obj(subject, "first_house")
+    dsc_abs = (get_abs_pos(h1) + 180) % 360 if h1 else None
+    h10 = get_obj(subject, "tenth_house")
+    ic_abs = (get_abs_pos(h10) + 180) % 360 if h10 else None
+
+    entities = []
+    for d_name, a_name in points:
+        obj = get_obj(subject, a_name)
+        obj_f = get_obj(subject_future, a_name)
+        if obj and obj_f:
+            entities.append({
+                "name": d_name,
+                "abs_pos": get_abs_pos(obj),
+                "abs_pos_f": get_abs_pos(obj_f),
+                "is_luminary": d_name in ["Sun", "Moon"]
+            })
+            
+    for d_name, a_name in angles:
+        obj = get_obj(subject, a_name)
+        obj_f = get_obj(subject_future, a_name)
+        if obj and obj_f:
+            entities.append({
+                "name": "Ascendant" if d_name == "ASC" else d_name,
+                "abs_pos": get_abs_pos(obj),
+                "abs_pos_f": get_abs_pos(obj_f),
+                "is_luminary": False
+            })
+            
+    if dsc_abs is not None:
+        h1_f = get_obj(subject_future, "first_house")
+        dsc_abs_f = (get_abs_pos(h1_f) + 180) % 360 if h1_f else dsc_abs
+        entities.append({"name": "DSC", "abs_pos": dsc_abs, "abs_pos_f": dsc_abs_f, "is_luminary": False})
+
+    if ic_abs is not None:
+        h10_f = get_obj(subject_future, "tenth_house")
+        ic_abs_f = (get_abs_pos(h10_f) + 180) % 360 if h10_f else ic_abs
+        entities.append({"name": "IC", "abs_pos": ic_abs, "abs_pos_f": ic_abs_f, "is_luminary": False})
+            
+    aspect_types = [("Conjunction", 0), ("Sextile", 60), ("Square", 90), ("Trine", 120), ("Opposition", 180)]
+    
+    def get_diff(p1, p2):
+        d = abs(p1 - p2)
+        return min(d, 360 - d)
+
+    # 1. Natal Aspects
+    aspects_lines = []
+    for i in range(len(entities)):
+        for j in range(i + 1, len(entities)):
+            e1, e2 = entities[i], entities[j]
+            
+            if e1["name"] in ["Ascendant", "MC", "DSC", "IC"] and e2["name"] in ["Ascendant", "MC", "DSC", "IC"]:
+                continue
+            
+            diff = get_diff(e1["abs_pos"], e2["abs_pos"])
+            diff_f = get_diff(e1["abs_pos_f"], e2["abs_pos_f"])
+            
+            # Dynamic Orb Geometry
+            max_orb = 10 if (e1["is_luminary"] or e2["is_luminary"]) else 8
+            points_names = ["North Node", "Lilith", "Chiron", "Fortune", "Vertex", "Ascendant", "MC", "DSC", "IC"]
+            if e1["name"] in points_names or e2["name"] in points_names: max_orb = 6
+                
+            for asp_name, asp_angle in aspect_types:
+                orb_limit = max_orb - (2 if asp_name == "Sextile" else 0)
+                orb = abs(diff - asp_angle)
+                
+                if orb <= orb_limit:
+                    orb_f = abs(diff_f - asp_angle)
+                    status = "Applying" if orb_f < orb else "Separating"
+                    aspects_lines.append(f"{e1['name']} {asp_name} {e2['name']} (Orb: {deg_to_d_m(orb)}, {status})")
+                    break 
+
+    lines.extend(aspects_lines)
+
+    # 2. Transit to Natal Aspects
+    transit_entities = []
+    transit_points = [
+        ("Sun", "sun"), ("Moon", "moon"), ("Mercury", "mercury"), ("Venus", "venus"), 
+        ("Mars", "mars"), ("Jupiter", "jupiter"), ("Saturn", "saturn"), ("Uranus", "uranus"), 
+        ("Neptune", "neptune"), ("Pluto", "pluto"), ("North Node", "true_node"), ("Chiron", "chiron")
+    ]
+
+    for d_name, a_name in transit_points:
+        obj = get_obj(subject_transit, a_name)
+        obj_f = get_obj(subject_transit_f, a_name)
+        if obj and obj_f:
+            transit_entities.append({
+                "name": d_name,
+                "abs_pos": get_abs_pos(obj),
+                "abs_pos_f": get_abs_pos(obj_f)
+            })
+
+    if transit_entities:
+        lines.append("\n=== CURRENT TRANSITS TO NATAL ===")
+        for t_ent in transit_entities:
+            for n_ent in entities:
+                diff = get_diff(t_ent["abs_pos"], n_ent["abs_pos"])
+                # Compare moving transit to fixed static natal position for applying/separating
+                diff_f = get_diff(t_ent["abs_pos_f"], n_ent["abs_pos"]) 
+                
+                # Tight, predictive orbs for transits (3° for luminaries, 2° for everything else)
+                max_orb = 3 if t_ent["name"] in ["Sun", "Moon"] else 2
+                
+                for asp_name, asp_angle in aspect_types:
+                    orb = abs(diff - asp_angle)
+                    if orb <= max_orb:
+                        orb_f = abs(diff_f - asp_angle)
+                        status = "Applying" if orb_f < orb else "Separating"
+                        lines.append(f"Transit {t_ent['name']} {asp_name} Natal {n_ent['name']} (Orb: {deg_to_d_m(orb)}, {status})")
+                        break 
+
+    return "\n".join(lines)
 
 def background_tasks(data, chart_data, report_text):
     try:
@@ -152,7 +337,7 @@ def background_tasks(data, chart_data, report_text):
         sheet = client.open_by_key(os.environ.get("GOOGLE_SHEET_ID")).worksheet("Sheet1") 
         
         cats_string = ", ".join(data.categories)
-        chart_string = json.dumps(chart_data)
+        chart_string = chart_data
         
         row = [
             data.name, data.date, data.time, f"{data.city}, {data.nation}", 
@@ -255,6 +440,9 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
     try:
         year, month, day = map(int, data.date.split("-"))
         hour, minute = map(int, data.time.split(":"))
+        
+        # Unambiguous Date Format creation (e.g., "August 18, 2026")
+        formatted_dob = datetime.date(year, month, day).strftime("%B %d, %Y")
 
         chart_data = await get_chart_data(data.name, year, month, day, hour, minute, data.city, data.nation)
 
@@ -263,7 +451,9 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
         model = genai.GenerativeModel("gemini-3.5-flash-lite") 
         
         cats_str = ", ".join(data.categories)
-        user_prompt = f"User Name: {data.name}\nFocus Areas: {cats_str}\nQuestion: {data.question}\nChart Data: {json.dumps(chart_data)}"
+        
+        # Inject the formatted DOB to avoid day/month AI confusion
+        user_prompt = f"User Name: {data.name}\nDate of Birth: {formatted_dob}\nFocus Areas: {cats_str}\nQuestion: {data.question}\nChart Data:\n{chart_data}"
         
         report_text = ""
         for attempt in range(2):
