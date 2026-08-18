@@ -148,9 +148,42 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
         return f"{d}°{m:02d}’"
 
     def get_obj(subj, attr):
-        if hasattr(subj, attr): return getattr(subj, attr)
+        if hasattr(subj, attr): 
+            return getattr(subj, attr)
+        
+        # Fortune & Node Fallbacks
         if attr == "part_of_fortune" and hasattr(subj, "pars_fortuna"): return getattr(subj, "pars_fortuna")
         if attr == "true_node" and hasattr(subj, "mean_node"): return getattr(subj, "mean_node")
+        
+        # Vertex Dynamic Mathematical Fallback
+        if attr == "vertex":
+            if hasattr(subj, "_ascmc") and subj._ascmc and len(subj._ascmc) > 3:
+                v_abs = subj._ascmc[3]
+                signs = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"]
+                v_sign = signs[int(v_abs / 30)]
+                v_pos = v_abs % 30
+                
+                # Dynamically calculate which House the Vertex is in
+                v_house = ""
+                houses_list = ["first_house", "second_house", "third_house", "fourth_house", "fifth_house", "sixth_house", "seventh_house", "eighth_house", "ninth_house", "tenth_house", "eleventh_house", "twelfth_house"]
+                cusps = []
+                for h in houses_list:
+                    ho = getattr(subj, h, None)
+                    if ho:
+                        c = getattr(ho, "abs_pos", ho.get("abs_pos", 0)) if isinstance(ho, dict) else getattr(ho, "abs_pos", 0)
+                        cusps.append(c)
+                
+                if len(cusps) == 12:
+                    for i in range(12):
+                        c1 = cusps[i]
+                        c2 = cusps[(i+1)%12]
+                        if c1 < c2:
+                            if c1 <= v_abs < c2: v_house = str(i+1) + ("st" if i==0 else "nd" if i==1 else "rd" if i==2 else "th")
+                        else:
+                            if v_abs >= c1 or v_abs < c2: v_house = str(i+1) + ("st" if i==0 else "nd" if i==1 else "rd" if i==2 else "th")
+                
+                return {"sign": v_sign, "position": v_pos, "abs_pos": v_abs, "house": v_house}
+                
         return None
 
     def clean_house_name(h):
@@ -166,17 +199,17 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
         if not obj: return None
         if isinstance(obj, dict):
             sign = obj.get("sign", "")
-            pos = obj.get("position", 0) 
+            pos = obj.get("position", obj.get("pos", 0)) 
             house = obj.get("house", "")
             rx = ", Retrograde" if obj.get("retrograde", False) else ""
         else:
             sign = getattr(obj, "sign", "")
-            pos = getattr(obj, "position", 0) 
+            pos = getattr(obj, "position", getattr(obj, "pos", 0)) 
             house = getattr(obj, "house", "")
             rx = ", Retrograde" if getattr(obj, "retrograde", False) else ""
         
         house_clean = clean_house_name(house)
-        house_str = f", in {house_clean} House" if house_clean else ""
+        house_str = f", in {house_clean} House" if house_clean else (f", in {house} House" if house else "")
         return f"{p_name} in {sign} {deg_to_d_m(pos)}{rx}{house_str}"
 
     points = [
@@ -199,7 +232,7 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
     for d_name, a_name in angles:
         obj = get_obj(subject, a_name)
         if obj:
-            pos = getattr(obj, "position", 0) if not isinstance(obj, dict) else obj.get("position", 0)
+            pos = getattr(obj, "position", getattr(obj, "pos", 0)) if not isinstance(obj, dict) else obj.get("position", obj.get("pos", 0))
             sign = getattr(obj, "sign", "") if not isinstance(obj, dict) else obj.get("sign", "")
             lines.append(f"{d_name} in {sign} {deg_to_d_m(pos)}")
 
@@ -212,7 +245,7 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
     for d_name, a_name in houses_map:
         obj = get_obj(subject, a_name)
         if obj:
-            pos = getattr(obj, "position", 0) if not isinstance(obj, dict) else obj.get("position", 0)
+            pos = getattr(obj, "position", getattr(obj, "pos", 0)) if not isinstance(obj, dict) else obj.get("position", obj.get("pos", 0))
             sign = getattr(obj, "sign", "") if not isinstance(obj, dict) else obj.get("sign", "")
             lines.append(f"{d_name} in {sign} {deg_to_d_m(pos)}")
 
@@ -440,9 +473,6 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
         hour, minute = map(int, data.time.split(":"))
         
         formatted_dob = datetime.date(year, month, day).strftime("%B %d, %Y")
-        
-        # Override the incoming YYYY-MM-DD date with the unambiguous text version
-        # This will now be passed directly to the background_tasks function for Google Sheets
         data.date = formatted_dob 
 
         chart_data = await get_chart_data(data.name, year, month, day, hour, minute, data.city, data.nation)
