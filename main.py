@@ -137,7 +137,6 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
     if not tz_str:
         raise Exception("Could not determine timezone for this location.")
 
-    # Offload heavy math to separate threads to prevent Event Loop blocking
     subject = await asyncio.to_thread(
         AstrologicalSubject,
         name, year, month, day, hour, minute, 
@@ -177,40 +176,45 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
         return f"{d}°{m:02d}’"
 
     def get_obj(subj, attr):
-        if hasattr(subj, attr): 
-            return getattr(subj, attr)
+        obj = getattr(subj, attr, None)
         
-        if attr == "part_of_fortune" and hasattr(subj, "pars_fortuna"): return getattr(subj, "pars_fortuna")
-        if attr == "true_node" and hasattr(subj, "mean_node"): return getattr(subj, "mean_node")
-        
-        if attr == "vertex":
+        if not obj and attr == "part_of_fortune":
+            obj = getattr(subj, "pars_fortuna", None)
+            
+        if not obj and attr == "true_node":
+            obj = getattr(subj, "mean_node", None)
+            
+        # Bulletproof Manual Fortune Calculation
+        if not obj and attr == "part_of_fortune":
+            asc_obj = getattr(subj, "first_house", None)
+            sun_obj = getattr(subj, "sun", None)
+            moon_obj = getattr(subj, "moon", None)
+            
+            if asc_obj and sun_obj and moon_obj:
+                asc_abs = getattr(asc_obj, "abs_pos", 0) if not isinstance(asc_obj, dict) else asc_obj.get("abs_pos", 0)
+                sun_abs = getattr(sun_obj, "abs_pos", 0) if not isinstance(sun_obj, dict) else sun_obj.get("abs_pos", 0)
+                moon_abs = getattr(moon_obj, "abs_pos", 0) if not isinstance(moon_obj, dict) else moon_obj.get("abs_pos", 0)
+                
+                sun_h = getattr(sun_obj, "house", "") if not isinstance(sun_obj, dict) else sun_obj.get("house", "")
+                is_day = any(x in sun_h for x in ["7", "8", "9", "10", "11", "12", "Seventh", "Eighth", "Ninth", "Tenth", "Eleventh", "Twelfth"])
+                
+                f_abs = (asc_abs + moon_abs - sun_abs) % 360 if is_day else (asc_abs + sun_abs - moon_abs) % 360
+                signs = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"]
+                return {"sign": signs[int(f_abs / 30)], "position": f_abs % 30, "abs_pos": f_abs}
+
+        # Bulletproof Vertex Extraction
+        if not obj and attr == "vertex":
+            v_abs = None
             if hasattr(subj, "_ascmc") and subj._ascmc and len(subj._ascmc) > 3:
                 v_abs = subj._ascmc[3]
+            elif hasattr(subj, "ascmc") and subj.ascmc and len(subj.ascmc) > 3:
+                v_abs = subj.ascmc[3]
+            
+            if v_abs is not None:
                 signs = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"]
-                v_sign = signs[int(v_abs / 30)]
-                v_pos = v_abs % 30
+                return {"sign": signs[int(v_abs / 30)], "position": v_abs % 30, "abs_pos": v_abs}
                 
-                v_house = ""
-                houses_list = ["first_house", "second_house", "third_house", "fourth_house", "fifth_house", "sixth_house", "seventh_house", "eighth_house", "ninth_house", "tenth_house", "eleventh_house", "twelfth_house"]
-                cusps = []
-                for h in houses_list:
-                    ho = getattr(subj, h, None)
-                    if ho:
-                        c = getattr(ho, "abs_pos", ho.get("abs_pos", 0)) if isinstance(ho, dict) else getattr(ho, "abs_pos", 0)
-                        cusps.append(c)
-                
-                if len(cusps) == 12:
-                    for i in range(12):
-                        c1 = cusps[i]
-                        c2 = cusps[(i+1)%12]
-                        if c1 < c2:
-                            if c1 <= v_abs < c2: v_house = str(i+1) + ("st" if i==0 else "nd" if i==1 else "rd" if i==2 else "th")
-                        else:
-                            if v_abs >= c1 or v_abs < c2: v_house = str(i+1) + ("st" if i==0 else "nd" if i==1 else "rd" if i==2 else "th")
-                
-                return {"sign": v_sign, "position": v_pos, "abs_pos": v_abs, "house": v_house}
-                
-        return None
+        return obj
 
     def clean_house_name(h):
         mapping = {
@@ -223,16 +227,30 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
 
     def format_pos(p_name, obj):
         if not obj: return None
-        if isinstance(obj, dict):
-            sign = obj.get("sign", "")
-            pos = obj.get("position", obj.get("pos", 0)) 
-            house = obj.get("house", "")
-            rx = ", Retrograde" if obj.get("retrograde", False) else ""
-        else:
-            sign = getattr(obj, "sign", "")
-            pos = getattr(obj, "position", getattr(obj, "pos", 0)) 
-            house = getattr(obj, "house", "")
-            rx = ", Retrograde" if getattr(obj, "retrograde", False) else ""
+        is_dict = isinstance(obj, dict)
+        
+        sign = obj.get("sign", "") if is_dict else getattr(obj, "sign", "")
+        pos = obj.get("position", obj.get("pos", 0)) if is_dict else getattr(obj, "position", getattr(obj, "pos", 0)) 
+        house = obj.get("house", "") if is_dict else getattr(obj, "house", "")
+        abs_pos = obj.get("abs_pos", None) if is_dict else getattr(obj, "abs_pos", None)
+        rx = ", Retrograde" if (obj.get("retrograde", False) if is_dict else getattr(obj, "retrograde", False)) else ""
+        
+        # Universal Dynamic House Resolution Engine (Assigns houses perfectly if missing)
+        if not house and abs_pos is not None:
+            houses_list = ["first_house", "second_house", "third_house", "fourth_house", "fifth_house", "sixth_house", "seventh_house", "eighth_house", "ninth_house", "tenth_house", "eleventh_house", "twelfth_house"]
+            cusps = []
+            for h in houses_list:
+                ho = getattr(subject, h, None)
+                if ho:
+                    c = getattr(ho, "abs_pos", ho.get("abs_pos", 0)) if isinstance(ho, dict) else getattr(ho, "abs_pos", 0)
+                    cusps.append(c)
+            if len(cusps) == 12:
+                for i in range(12):
+                    c1 = cusps[i]
+                    c2 = cusps[(i+1)%12]
+                    if (c1 < c2 and c1 <= abs_pos < c2) or (c1 > c2 and (abs_pos >= c1 or abs_pos < c2)):
+                        house = str(i+1) + ("st" if i==0 else "nd" if i==1 else "rd" if i==2 else "th")
+                        break
         
         house_clean = clean_house_name(house)
         house_str = f", in {house_clean} House" if house_clean else (f", in {house} House" if house else "")
