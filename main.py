@@ -371,7 +371,7 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
     
     asc_obj = get_obj(subject, "first_house")
     asc_sign = getattr(asc_obj, "sign", "") if not isinstance(asc_obj, dict) else asc_obj.get("sign", "")
-    asc_sign = asc_sign.capitalize() if isinstance(asc_sign, str) else "" # Safety net for index mapping
+    asc_sign = asc_sign.capitalize() if isinstance(asc_sign, str) else "" 
     
     signs_list = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"]
     
@@ -404,6 +404,7 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
         
         lines.append(f"\n=== ANNUAL PROFECTION ===")
         lines.append(f"Current Age: {age}")
+        lines.append(f"Base Ascendant Calculated: {asc_sign}")
         lines.append(f"Profection Year: {prof_house_num}{suffix} House")
         lines.append(f"Profection Sign: {prof_sign}")
         lines.append(f"Time Lord: {time_lord_final}")
@@ -563,7 +564,6 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
         system_prompt = await get_system_prompt()
         genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
         
-        # Kept safely on Flash Lite to prevent hanging/timeouts
         model = genai.GenerativeModel("gemini-3.5-flash-lite") 
         
         cats_str = ", ".join(data.categories)
