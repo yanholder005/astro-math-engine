@@ -166,12 +166,12 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
         if not obj: return None
         if isinstance(obj, dict):
             sign = obj.get("sign", "")
-            pos = obj.get("position", 0) # Fixed position keyword
+            pos = obj.get("position", 0) 
             house = obj.get("house", "")
             rx = ", Retrograde" if obj.get("retrograde", False) else ""
         else:
             sign = getattr(obj, "sign", "")
-            pos = getattr(obj, "position", 0) # Fixed position keyword
+            pos = getattr(obj, "position", 0) 
             house = getattr(obj, "house", "")
             rx = ", Retrograde" if getattr(obj, "retrograde", False) else ""
         
@@ -440,6 +440,10 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
         hour, minute = map(int, data.time.split(":"))
         
         formatted_dob = datetime.date(year, month, day).strftime("%B %d, %Y")
+        
+        # Override the incoming YYYY-MM-DD date with the unambiguous text version
+        # This will now be passed directly to the background_tasks function for Google Sheets
+        data.date = formatted_dob 
 
         chart_data = await get_chart_data(data.name, year, month, day, hour, minute, data.city, data.nation)
 
