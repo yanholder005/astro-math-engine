@@ -515,6 +515,15 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
         formatted_dob = datetime.date(year, month, day).strftime("%B %d, %Y")
         data.date = formatted_dob 
 
+        # --- THE BULLETPROOF PROFECTION CALCULATOR ---
+        now_date = datetime.datetime.utcnow()
+        age = now_date.year - year - ((now_date.month, now_date.day) < (month, day))
+        
+        prof_num = (age % 12) + 1
+        suffixes = {1: 'st', 2: 'nd', 3: 'rd'}
+        suffix = suffixes.get(prof_num if prof_num < 20 else prof_num % 10, 'th')
+        profection_house = f"{prof_num}{suffix} House"
+
         chart_data = await get_chart_data(data.name, year, month, day, hour, minute, data.city, data.nation)
 
         system_prompt = await get_system_prompt()
@@ -523,10 +532,9 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
         model = genai.GenerativeModel("gemini-3.5-flash-lite") 
         
         cats_str = ", ".join(data.categories)
-        now_utc = datetime.datetime.utcnow()
-        current_date_str = now_utc.strftime("%B %d, %Y")
+        current_date_str = now_date.strftime("%B %d, %Y")
         
-        user_prompt = f"User Name: {data.name}\nDate of Birth: {formatted_dob}\nCurrent Date: {current_date_str}\nFocus Areas: {cats_str}\nQuestion: {data.question}\nChart Data:\n{chart_data}"
+        user_prompt = f"User Name: {data.name}\nDate of Birth: {formatted_dob}\nCurrent Date: {current_date_str}\nCurrent Age: {age}\nCurrent Profection Year: {profection_house}\nFocus Areas: {cats_str}\nQuestion: {data.question}\nChart Data:\n{chart_data}"
         
         report_text = ""
         for attempt in range(3):
