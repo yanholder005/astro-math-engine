@@ -408,7 +408,6 @@ def background_tasks(data, chart_data, report_text):
         cats_string = ", ".join(data.categories)
         timestamp_str = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         
-        # Added Timestamp to Column 11 for the Sequence Scanner
         row = [
             data.name, data.date, data.time, f"{data.city}, {data.nation}", 
             data.question, data.email, cats_string, chart_data, report_text, "", timestamp_str
@@ -431,9 +430,9 @@ def background_tasks(data, chart_data, report_text):
         <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;"/>
         <p>{formatted_report}</p>
         <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;"/>
-        <h3>Ready to unlock the complete picture?</h3>
-        <p>You've seen your baseline. Now map the rest of your chart in deep detail.</p>
-        <a href="https://yanholder.com/#report" style="display:inline-block; padding:10px 20px; background:#000; color:#fff; text-decoration:none; border-radius:100px; font-weight:bold;">Get The Complete Blueprint</a>
+        <h3 style="font-family: sans-serif; color: #111;">Your baseline is established. Are you ready for the full architectural breakdown?</h3>
+        <p style="font-family: sans-serif; color: #333;">We've mapped your surface. Now it's time to dive into the deep end of your chart.</p>
+        <a href="https://yanholder.com/#order-full" style="display:inline-block; padding:10px 20px; background:#000; color:#fff; text-decoration:none; border-radius:100px; font-weight:bold;">Upgrade To The Master Blueprint</a>
         """
 
         resend.Emails.send({
@@ -475,31 +474,35 @@ async def process_sequence_emails():
         leads = leads_sheet.get_all_values()
         buyers = buyers_sheet.get_all_values()
 
-        # Create a fast-lookup set of everyone who has ever bought the paid report
         buyer_emails = {row[1].strip().lower() for row in buyers if len(row) > 1}
         now_utc = datetime.datetime.utcnow()
 
         genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
         model = genai.GenerativeModel("gemini-3.5-flash-lite")
 
-        # Define the exact AI Prompts for the 3 Follow-up Emails
+        # Dynamic Prompts with unique pre-text and unique button text to avoid Gmail clipping
         prompts = {
             1: {
                 "subject": "I was looking at your chart again...",
-                "sys": "You are an elite clinical astrologer writing a follow-up email. Write exactly 2 short paragraphs. NO greetings, NO sign-offs, NO subject lines in the output. Tone: urgent, empathetic, clinical. Instruction: Act like you were reviewing their chart again today and noticed a specific, heavy anomaly regarding their psychological shadow (Chiron or 12th House). Do NOT name the astrological placement. Describe the exact psychological friction it causes based on their chart. End with: 'This is exactly why you need to map the rest of your chart. Your complete blueprint is waiting.'"
+                "sys": "You are an elite clinical astrologer writing a follow-up email. Write exactly 2 short paragraphs. NO greetings, NO sign-offs, NO subject lines in the output. Tone: urgent, empathetic, clinical. Instruction: Act like you were reviewing their chart again today and noticed a specific, heavy anomaly regarding their psychological shadow (Chiron or 12th House). Do NOT name the astrological placement. Describe the exact psychological friction it causes based on their chart.",
+                "pre_cta": "There is a massive piece of your chart we didn't cover. You need to see this before it dictates your next move.",
+                "cta_text": "Unlock Your Full Shadow Reading"
             },
             2: {
                 "subject": "Your upcoming timeline (urgent)",
-                "sys": "You are an elite clinical astrologer writing a follow-up email. Write exactly 2 short paragraphs. NO greetings, NO sign-offs. Tone: urgent, authoritative. Instruction: Look at their current outer planet transits (Saturn, Uranus, Pluto). Pick the hardest transit currently hitting them. Do NOT name the planets. Describe the massive window of opportunity or tension opening up in their life right now based on that transit. End with: 'You are flying blind right now. It is time to look at the full picture.'"
+                "sys": "You are an elite clinical astrologer writing a follow-up email. Write exactly 2 short paragraphs. NO greetings, NO sign-offs. Tone: urgent, authoritative. Instruction: Look at their current outer planet transits (Saturn, Uranus, Pluto). Pick the hardest transit currently hitting them. Do NOT name the planets. Describe the massive window of opportunity or tension opening up in their life right now based on that transit.",
+                "pre_cta": "Time is moving fast, and this transit is not going to wait for you to feel ready.",
+                "cta_text": "Map My 6-Month Timeline"
             },
             3: {
                 "subject": "The brutal truth about your chart",
-                "sys": "You are an elite clinical astrologer writing a final follow-up email. Write exactly 2 short paragraphs. NO greetings, NO sign-offs. Tone: sharp, brutal truth. Instruction: Focus on their North and South Node (destiny vs comfort zone). Do NOT name the Nodes. Tell them exactly how they are hiding from their true potential based on their chart. End with: 'This is the last time I will reach out. Your chart holds the exact blueprint to fix this, but you have to be willing to look at it.'"
+                "sys": "You are an elite clinical astrologer writing a final follow-up email. Write exactly 2 short paragraphs. NO greetings, NO sign-offs. Tone: sharp, brutal truth. Instruction: Focus on their North and South Node (destiny vs comfort zone). Do NOT name the Nodes. Tell them exactly how they are hiding from their true potential based on their chart.",
+                "pre_cta": "Stop guessing. Get the definitive, mathematical answer to exactly why you feel stuck.",
+                "cta_text": "Reveal My Complete Destiny"
             }
         }
 
         for i, row in enumerate(leads):
-            # Skip old rows that don't have our new Timestamp in column 11
             if len(row) < 11 or not row[10]:
                 continue
             
@@ -508,7 +511,6 @@ async def process_sequence_emails():
             chart_data = row[7]
             timestamp_str = row[10]
 
-            # If they bought the report, skip them forever
             if email in buyer_emails:
                 continue
 
@@ -519,7 +521,6 @@ async def process_sequence_emails():
             
             hours_elapsed = (now_utc - ts).total_seconds() / 3600
 
-            # Pad the row so it safely has 14 columns (Seq1, Seq2, Seq3)
             while len(row) < 14:
                 row.append("")
             
@@ -529,13 +530,13 @@ async def process_sequence_emails():
             # Trigger Logic: 24h, 48h, 72h
             if 24 <= hours_elapsed < 48 and not seq1:
                 step_to_send = 1
-                col_to_update = 12 # Column L in sheets (1-indexed)
+                col_to_update = 12 
             elif 48 <= hours_elapsed < 72 and not seq2:
                 step_to_send = 2
-                col_to_update = 13 # Column M
+                col_to_update = 13 
             elif hours_elapsed >= 72 and not seq3:
                 step_to_send = 3
-                col_to_update = 14 # Column N
+                col_to_update = 14 
 
             if step_to_send > 0:
                 p_data = prompts[step_to_send]
@@ -548,13 +549,14 @@ async def process_sequence_emails():
                     formatted_text = email_text.replace('\n', '<br/>')
                     formatted_text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', formatted_text)
 
-                    # Send the Email via Resend
+                    # Dynamic HTML construction with unique buttons
                     resend.api_key = os.environ.get("RESEND_API_KEY")
                     email_html = f"""
-                    <p>Hi {name},</p>
-                    <p>{formatted_text}</p>
-                    <br>
-                    <a href="https://yanholder.com/#order-full" style="display:inline-block; padding:10px 20px; background:#000; color:#fff; text-decoration:none; border-radius:100px; font-weight:bold;">Get The Complete Blueprint</a>
+                    <p style="font-family: sans-serif; color: #111;">Hi {name},</p>
+                    <p style="font-family: sans-serif; color: #111;">{formatted_text}</p>
+                    <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;"/>
+                    <h3 style="font-family: sans-serif; color: #111;">{p_data['pre_cta']}</h3>
+                    <a href="https://yanholder.com/#order-full" style="display:inline-block; padding:10px 20px; background:#000; color:#fff; text-decoration:none; border-radius:100px; font-weight:bold;">{p_data['cta_text']}</a>
                     """
 
                     resend.Emails.send({
@@ -565,11 +567,9 @@ async def process_sequence_emails():
                         "html": email_html
                     })
                     
-                    # Log that the email was sent so they don't get it again
                     def update_seq_cell(): leads_sheet.update_cell(i + 1, col_to_update, "SENT")
                     exponential_backoff_retry(update_seq_cell)
                     
-                    # Sleep for 2 seconds to prevent Google Sheets/Gemini API rate limits
                     await asyncio.sleep(2)
                     
                 except Exception as ex:
@@ -584,7 +584,6 @@ async def health_check(): return {"status": "awake"}
 
 @app.get("/trigger-sequence")
 async def trigger_sequence(bg_tasks: BackgroundTasks):
-    """Hits this endpoint via a Cron Job to scan the sheet and send follow-ups."""
     bg_tasks.add_task(process_sequence_emails)
     return {"status": "Sequence scanner initiated in background."}
 
