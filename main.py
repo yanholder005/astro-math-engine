@@ -15,6 +15,7 @@ import time
 import urllib.request
 import datetime
 import random
+import re
 
 app = FastAPI()
 
@@ -419,12 +420,16 @@ def background_tasks(data, chart_data, report_text):
         send_admin_error_alert(f"Failed to log row to Google Sheets: {e}", {"email": data.email})
 
     try:
+        # Convert newlines to HTML breaks and Markdown bold **text** to HTML <strong>text</strong>
+        formatted_report = report_text.replace('\n', '<br/>')
+        formatted_report = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', formatted_report)
+
         resend.api_key = os.environ.get("RESEND_API_KEY")
         email_html = f"""
         <p>Hi {data.name},</p>
         <p>Here is the backup copy of your astrology report:</p>
         <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;"/>
-        <p>{report_text.replace(chr(10), '<br/>')}</p>
+        <p>{formatted_report}</p>
         <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;"/>
         <h3>Ready to unlock the complete picture?</h3>
         <p>You've seen your baseline. Now map the rest of your chart in deep detail.</p>
