@@ -32,7 +32,7 @@ tf = TimezoneFinder()
 
 PROMPT_CACHE = {"text": "", "last_fetched": 0}
 PPP_CACHE = {"prices": {}, "base_price_cents": 0, "last_fetched": 0}
-GSPREAD_CLIENT = None  # Global cache for Google Sheets Auth
+GSPREAD_CLIENT = None  
 
 # --- MODELS ---
 class BirthData(BaseModel):
@@ -80,7 +80,6 @@ def send_admin_error_alert(error_message, user_data):
 
 # --- HELPER FUNCTIONS ---
 def get_gspread_client():
-    """Authenticates once and caches the client to prevent Google API rate limits"""
     global GSPREAD_CLIENT
     if GSPREAD_CLIENT is None:
         try:
@@ -93,7 +92,6 @@ def get_gspread_client():
     return GSPREAD_CLIENT
 
 def exponential_backoff_retry(func, *args, max_retries=4, **kwargs):
-    """Executes Google Sheets operations with retry logic for 429 Quota errors"""
     for attempt in range(max_retries):
         try:
             return func(*args, **kwargs)
@@ -408,9 +406,12 @@ def background_tasks(data, chart_data, report_text):
         sheet = client.open_by_key(os.environ.get("GOOGLE_SHEET_ID")).worksheet("Sheet1") 
         
         cats_string = ", ".join(data.categories)
+        timestamp_str = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Added Timestamp to Column 11 for the Sequence Scanner
         row = [
             data.name, data.date, data.time, f"{data.city}, {data.nation}", 
-            data.question, data.email, cats_string, chart_data, report_text, ""
+            data.question, data.email, cats_string, chart_data, report_text, "", timestamp_str
         ]
         
         def append(): sheet.append_row(row)
@@ -420,7 +421,6 @@ def background_tasks(data, chart_data, report_text):
         send_admin_error_alert(f"Failed to log row to Google Sheets: {e}", {"email": data.email})
 
     try:
-        # Convert newlines to HTML breaks and Markdown bold **text** to HTML <strong>text</strong>
         formatted_report = report_text.replace('\n', '<br/>')
         formatted_report = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', formatted_report)
 
@@ -433,7 +433,7 @@ def background_tasks(data, chart_data, report_text):
         <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;"/>
         <h3>Ready to unlock the complete picture?</h3>
         <p>You've seen your baseline. Now map the rest of your chart in deep detail.</p>
-        <a href="https://yanholder.com/#order-full" style="display:inline-block; padding:10px 20px; background:#000; color:#fff; text-decoration:none; border-radius:100px; font-weight:bold;">Get The Complete Blueprint</a>
+        <a href="https://yanholder.com/#report" style="display:inline-block; padding:10px 20px; background:#000; color:#fff; text-decoration:none; border-radius:100px; font-weight:bold;">Get The Complete Blueprint</a>
         """
 
         resend.Emails.send({
@@ -464,9 +464,129 @@ def background_update_sheet(email, extra_info):
         print(f"Update Sheet Error: {e}")
         send_admin_error_alert(f"Failed to update Google Sheet with extra info: {e}", {"email": email})
 
+# --- THE AUTOMATED EMAIL SEQUENCE WORKER ---
+async def process_sequence_emails():
+    try:
+        client = get_gspread_client()
+        sheet_id = os.environ.get("GOOGLE_SHEET_ID")
+        leads_sheet = client.open_by_key(sheet_id).worksheet("Sheet1")
+        buyers_sheet = client.open_by_key(sheet_id).worksheet("PaidReports")
+
+        leads = leads_sheet.get_all_values()
+        buyers = buyers_sheet.get_all_values()
+
+        # Create a fast-lookup set of everyone who has ever bought the paid report
+        buyer_emails = {row[1].strip().lower() for row in buyers if len(row) > 1}
+        now_utc = datetime.datetime.utcnow()
+
+        genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+        model = genai.GenerativeModel("gemini-3.5-flash-lite")
+
+        # Define the exact AI Prompts for the 3 Follow-up Emails
+        prompts = {
+            1: {
+                "subject": "I was looking at your chart again...",
+                "sys": "You are an elite clinical astrologer writing a follow-up email. Write exactly 2 short paragraphs. NO greetings, NO sign-offs, NO subject lines in the output. Tone: urgent, empathetic, clinical. Instruction: Act like you were reviewing their chart again today and noticed a specific, heavy anomaly regarding their psychological shadow (Chiron or 12th House). Do NOT name the astrological placement. Describe the exact psychological friction it causes based on their chart. End with: 'This is exactly why you need to map the rest of your chart. Your complete blueprint is waiting.'"
+            },
+            2: {
+                "subject": "Your upcoming timeline (urgent)",
+                "sys": "You are an elite clinical astrologer writing a follow-up email. Write exactly 2 short paragraphs. NO greetings, NO sign-offs. Tone: urgent, authoritative. Instruction: Look at their current outer planet transits (Saturn, Uranus, Pluto). Pick the hardest transit currently hitting them. Do NOT name the planets. Describe the massive window of opportunity or tension opening up in their life right now based on that transit. End with: 'You are flying blind right now. It is time to look at the full picture.'"
+            },
+            3: {
+                "subject": "The brutal truth about your chart",
+                "sys": "You are an elite clinical astrologer writing a final follow-up email. Write exactly 2 short paragraphs. NO greetings, NO sign-offs. Tone: sharp, brutal truth. Instruction: Focus on their North and South Node (destiny vs comfort zone). Do NOT name the Nodes. Tell them exactly how they are hiding from their true potential based on their chart. End with: 'This is the last time I will reach out. Your chart holds the exact blueprint to fix this, but you have to be willing to look at it.'"
+            }
+        }
+
+        for i, row in enumerate(leads):
+            # Skip old rows that don't have our new Timestamp in column 11
+            if len(row) < 11 or not row[10]:
+                continue
+            
+            name = row[0]
+            email = row[5].strip().lower()
+            chart_data = row[7]
+            timestamp_str = row[10]
+
+            # If they bought the report, skip them forever
+            if email in buyer_emails:
+                continue
+
+            try:
+                ts = datetime.datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+            except:
+                continue
+            
+            hours_elapsed = (now_utc - ts).total_seconds() / 3600
+
+            # Pad the row so it safely has 14 columns (Seq1, Seq2, Seq3)
+            while len(row) < 14:
+                row.append("")
+            
+            seq1, seq2, seq3 = row[11], row[12], row[13]
+            step_to_send = 0
+
+            # Trigger Logic: 24h, 48h, 72h
+            if 24 <= hours_elapsed < 48 and not seq1:
+                step_to_send = 1
+                col_to_update = 12 # Column L in sheets (1-indexed)
+            elif 48 <= hours_elapsed < 72 and not seq2:
+                step_to_send = 2
+                col_to_update = 13 # Column M
+            elif hours_elapsed >= 72 and not seq3:
+                step_to_send = 3
+                col_to_update = 14 # Column N
+
+            if step_to_send > 0:
+                p_data = prompts[step_to_send]
+                user_prompt = f"User Name: {name}\nChart Data:\n{chart_data}"
+                
+                try:
+                    response = await model.generate_content_async(f"{p_data['sys']}\n\n{user_prompt}")
+                    email_text = response.text
+                    
+                    formatted_text = email_text.replace('\n', '<br/>')
+                    formatted_text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', formatted_text)
+
+                    # Send the Email via Resend
+                    resend.api_key = os.environ.get("RESEND_API_KEY")
+                    email_html = f"""
+                    <p>Hi {name},</p>
+                    <p>{formatted_text}</p>
+                    <br>
+                    <a href="https://yanholder.com/#order-full" style="display:inline-block; padding:10px 20px; background:#000; color:#fff; text-decoration:none; border-radius:100px; font-weight:bold;">Get The Complete Blueprint</a>
+                    """
+
+                    resend.Emails.send({
+                        "from": "Yan Holder <yan@yanholder.com>",
+                        "reply_to": "yan@yanholder.com",
+                        "to": [email],
+                        "subject": p_data["subject"],
+                        "html": email_html
+                    })
+                    
+                    # Log that the email was sent so they don't get it again
+                    def update_seq_cell(): leads_sheet.update_cell(i + 1, col_to_update, "SENT")
+                    exponential_backoff_retry(update_seq_cell)
+                    
+                    # Sleep for 2 seconds to prevent Google Sheets/Gemini API rate limits
+                    await asyncio.sleep(2)
+                    
+                except Exception as ex:
+                    print(f"Failed to process sequence step {step_to_send} for {email}: {ex}")
+
+    except Exception as e:
+        print(f"Sequence Scanner Error: {e}")
+
 # --- ROUTES ---
 @app.get("/")
 async def health_check(): return {"status": "awake"}
+
+@app.get("/trigger-sequence")
+async def trigger_sequence(bg_tasks: BackgroundTasks):
+    """Hits this endpoint via a Cron Job to scan the sheet and send follow-ups."""
+    bg_tasks.add_task(process_sequence_emails)
+    return {"status": "Sequence scanner initiated in background."}
 
 @app.get("/get-ppp-price")
 async def get_ppp_price(country: str = None):
@@ -520,7 +640,6 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
         formatted_dob = datetime.date(year, month, day).strftime("%B %d, %Y")
         data.date = formatted_dob 
 
-        # --- THE BULLETPROOF PROFECTION CALCULATOR ---
         now_date = datetime.datetime.utcnow()
         age = now_date.year - year - ((now_date.month, now_date.day) < (month, day))
         
