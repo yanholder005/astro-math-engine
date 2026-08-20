@@ -425,10 +425,10 @@ def background_tasks(data, chart_data, report_text):
 
         resend.api_key = os.environ.get("RESEND_API_KEY")
         email_html = f"""
-        <p>Hi {data.name},</p>
-        <p>Here is the backup copy of your astrology report:</p>
+        <p style="font-family: sans-serif; color: #111;">Hi {data.name},</p>
+        <p style="font-family: sans-serif; color: #111;">Here is the backup copy of your astrology report:</p>
         <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;"/>
-        <p>{formatted_report}</p>
+        <p style="font-family: sans-serif; color: #111;">{formatted_report}</p>
         <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;"/>
         <h3 style="font-family: sans-serif; color: #111;">Your baseline is established. Are you ready for the full architectural breakdown?</h3>
         <p style="font-family: sans-serif; color: #333;">We've mapped your surface. Now it's time to dive into the deep end of your chart.</p>
@@ -480,22 +480,22 @@ async def process_sequence_emails():
         genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
         model = genai.GenerativeModel("gemini-3.5-flash-lite")
 
-        # Dynamic Prompts with unique pre-text and unique button text to avoid Gmail clipping
+        # Dynamic Prompts with uniquely personalized subject lines
         prompts = {
             1: {
-                "subject": "I was looking at your chart again...",
+                "subject": "{name}, I was looking at your chart again...",
                 "sys": "You are an elite clinical astrologer writing a follow-up email. Write exactly 2 short paragraphs. NO greetings, NO sign-offs, NO subject lines in the output. Tone: urgent, empathetic, clinical. Instruction: Act like you were reviewing their chart again today and noticed a specific, heavy anomaly regarding their psychological shadow (Chiron or 12th House). Do NOT name the astrological placement. Describe the exact psychological friction it causes based on their chart.",
                 "pre_cta": "There is a massive piece of your chart we didn't cover. You need to see this before it dictates your next move.",
                 "cta_text": "Unlock Your Full Shadow Reading"
             },
             2: {
-                "subject": "Your upcoming timeline (urgent)",
+                "subject": "{name}, your upcoming timeline (urgent)",
                 "sys": "You are an elite clinical astrologer writing a follow-up email. Write exactly 2 short paragraphs. NO greetings, NO sign-offs. Tone: urgent, authoritative. Instruction: Look at their current outer planet transits (Saturn, Uranus, Pluto). Pick the hardest transit currently hitting them. Do NOT name the planets. Describe the massive window of opportunity or tension opening up in their life right now based on that transit.",
                 "pre_cta": "Time is moving fast, and this transit is not going to wait for you to feel ready.",
                 "cta_text": "Map My 6-Month Timeline"
             },
             3: {
-                "subject": "The brutal truth about your chart",
+                "subject": "The brutal truth about your chart, {name}",
                 "sys": "You are an elite clinical astrologer writing a final follow-up email. Write exactly 2 short paragraphs. NO greetings, NO sign-offs. Tone: sharp, brutal truth. Instruction: Focus on their North and South Node (destiny vs comfort zone). Do NOT name the Nodes. Tell them exactly how they are hiding from their true potential based on their chart.",
                 "pre_cta": "Stop guessing. Get the definitive, mathematical answer to exactly why you feel stuck.",
                 "cta_text": "Reveal My Complete Destiny"
@@ -549,8 +549,12 @@ async def process_sequence_emails():
                     formatted_text = email_text.replace('\n', '<br/>')
                     formatted_text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', formatted_text)
 
-                    # Dynamic HTML construction with unique buttons
+                    # Dynamic HTML construction with unique buttons and names
                     resend.api_key = os.environ.get("RESEND_API_KEY")
+                    
+                    # Ensure name is injected into the subject line
+                    subject_line = p_data["subject"].replace("{name}", name)
+                    
                     email_html = f"""
                     <p style="font-family: sans-serif; color: #111;">Hi {name},</p>
                     <p style="font-family: sans-serif; color: #111;">{formatted_text}</p>
@@ -563,7 +567,7 @@ async def process_sequence_emails():
                         "from": "Yan Holder <yan@yanholder.com>",
                         "reply_to": "yan@yanholder.com",
                         "to": [email],
-                        "subject": p_data["subject"],
+                        "subject": subject_line,
                         "html": email_html
                     })
                     
