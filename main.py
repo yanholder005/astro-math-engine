@@ -48,8 +48,8 @@ class BirthData(BaseModel):
 class DiagnosticRequest(BaseModel):
     name: str
     email: str
-    date: str       
-    time: str       
+    date: str        
+    time: str        
     city: str
     nation: str
     categories: list
@@ -480,25 +480,13 @@ async def process_sequence_emails():
         genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
         model = genai.GenerativeModel("gemini-3.5-flash-lite")
 
-        # Dynamic Prompts with uniquely personalized subject lines
+        # Dynamic Prompts reduced to a single empathetic follow-up
         prompts = {
             1: {
-                "subject": "{name}, I was looking at your chart again...",
-                "sys": "You are an elite clinical astrologer writing a follow-up email. Write exactly 2 short paragraphs. NO greetings, NO sign-offs, NO subject lines in the output. Tone: urgent, empathetic, clinical. Instruction: Act like you were reviewing their chart again today and noticed a specific, heavy anomaly regarding their psychological shadow (Chiron or 12th House). Do NOT name the astrological placement. Describe the exact psychological friction it causes based on their chart.",
-                "pre_cta": "There is a massive piece of your chart we didn't cover. You need to see this before it dictates your next move.",
-                "cta_text": "Unlock Your Full Shadow Reading"
-            },
-            2: {
-                "subject": "{name}, your upcoming timeline (urgent)",
-                "sys": "You are an elite clinical astrologer writing a follow-up email. Write exactly 2 short paragraphs. NO greetings, NO sign-offs. Tone: urgent, authoritative. Instruction: Look at their current outer planet transits (Saturn, Uranus, Pluto). Pick the hardest transit currently hitting them. Do NOT name the planets. Describe the massive window of opportunity or tension opening up in their life right now based on that transit.",
-                "pre_cta": "Time is moving fast, and this transit is not going to wait for you to feel ready.",
-                "cta_text": "Map My 6-Month Timeline"
-            },
-            3: {
-                "subject": "The brutal truth about your chart, {name}",
-                "sys": "You are an elite clinical astrologer writing a final follow-up email. Write exactly 2 short paragraphs. NO greetings, NO sign-offs. Tone: sharp, brutal truth. Instruction: Focus on their North and South Node (destiny vs comfort zone). Do NOT name the Nodes. Tell them exactly how they are hiding from their true potential based on their chart.",
-                "pre_cta": "Stop guessing. Get the definitive, mathematical answer to exactly why you feel stuck.",
-                "cta_text": "Reveal My Complete Destiny"
+                "subject": "{name}, a deeper layer of your chart...",
+                "sys": "You are an elite, empathetic clinical astrologer writing a single follow-up email. Write exactly 2 short paragraphs. NO greetings, NO sign-offs, NO subject lines in the output. Tone: insightful, warm, strategically valuable, but NOT aggressive or fear-mongering. Instruction: Look at their chart's core tension (like Chiron, 12th House, or a major aspect) and gently point out a specific pattern of friction or self-sabotage they might be experiencing right now. Do NOT name the astrological placement directly. Offer a reassuring but firm insight on why bringing awareness to this pattern is the key to their growth.",
+                "pre_cta": "There is a deeper architecture to your chart that holds the blueprint for navigating this. When you are ready to explore it, I've compiled everything for you.",
+                "cta_text": "Unlock Your Master Blueprint"
             }
         }
 
@@ -521,22 +509,17 @@ async def process_sequence_emails():
             
             hours_elapsed = (now_utc - ts).total_seconds() / 3600
 
+            # Keep padding up to 14 to preserve sheet structure safely
             while len(row) < 14:
                 row.append("")
             
-            seq1, seq2, seq3 = row[11], row[12], row[13]
+            seq1 = row[11]
             step_to_send = 0
 
-            # Trigger Logic: 24h, 48h, 72h
-            if 24 <= hours_elapsed < 48 and not seq1:
+            # Trigger Logic: Single follow-up sent anytime 24 hours+ after generation
+            if hours_elapsed >= 24 and not seq1:
                 step_to_send = 1
                 col_to_update = 12 
-            elif 48 <= hours_elapsed < 72 and not seq2:
-                step_to_send = 2
-                col_to_update = 13 
-            elif hours_elapsed >= 72 and not seq3:
-                step_to_send = 3
-                col_to_update = 14 
 
             if step_to_send > 0:
                 p_data = prompts[step_to_send]
