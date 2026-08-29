@@ -136,10 +136,12 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
     if not tz_str:
         raise Exception("Could not determine timezone for this location.")
 
+    # FIX: online=False prevents Geonames lag
     subject = await asyncio.to_thread(
         AstrologicalSubject,
         name, year, month, day, hour, minute, 
-        lng=location.longitude, lat=location.latitude, tz_str=tz_str, city=city
+        lng=location.longitude, lat=location.latitude, tz_str=tz_str, city=city,
+        online=False
     )
 
     dt = datetime.datetime(year, month, day, hour, minute)
@@ -149,7 +151,8 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
         AstrologicalSubject,
         name + "_future", dt_future.year, dt_future.month, dt_future.day, 
         dt_future.hour, dt_future.minute, 
-        lng=location.longitude, lat=location.latitude, tz_str=tz_str, city=city
+        lng=location.longitude, lat=location.latitude, tz_str=tz_str, city=city,
+        online=False
     )
 
     now_utc = datetime.datetime.utcnow()
@@ -158,12 +161,14 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
     subject_transit = await asyncio.to_thread(
         AstrologicalSubject,
         "Transit", now_utc.year, now_utc.month, now_utc.day, now_utc.hour, now_utc.minute, 
-        lng=0.0, lat=51.5, tz_str="UTC", city="London"
+        lng=0.0, lat=51.5, tz_str="UTC", city="London",
+        online=False
     )
     subject_transit_f = await asyncio.to_thread(
         AstrologicalSubject,
         "Transit_F", now_f.year, now_f.month, now_f.day, now_f.hour, now_f.minute, 
-        lng=0.0, lat=51.5, tz_str="UTC", city="London"
+        lng=0.0, lat=51.5, tz_str="UTC", city="London",
+        online=False
     )
 
     def deg_to_d_m(deg):
