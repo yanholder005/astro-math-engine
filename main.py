@@ -136,12 +136,10 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
     if not tz_str:
         raise Exception("Could not determine timezone for this location.")
 
-    # CRITICAL FIX 1: Explicitly defining houses_system="W" for Whole Sign
     subject = await asyncio.to_thread(
         AstrologicalSubject,
         name, year, month, day, hour, minute, 
-        lng=location.longitude, lat=location.latitude, tz_str=tz_str, city=city,
-        houses_system="W"
+        lng=location.longitude, lat=location.latitude, tz_str=tz_str, city=city
     )
 
     dt = datetime.datetime(year, month, day, hour, minute)
@@ -151,8 +149,7 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
         AstrologicalSubject,
         name + "_future", dt_future.year, dt_future.month, dt_future.day, 
         dt_future.hour, dt_future.minute, 
-        lng=location.longitude, lat=location.latitude, tz_str=tz_str, city=city,
-        houses_system="W"
+        lng=location.longitude, lat=location.latitude, tz_str=tz_str, city=city
     )
 
     now_utc = datetime.datetime.utcnow()
@@ -177,7 +174,6 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
             m = 0
         return f"{d}°{m:02d}’"
 
-    # CRITICAL FIX 2: Correctly calculating Day/Night Sect and Lot of Spirit
     def get_sect_and_lots(subj):
         asc_obj = getattr(subj, "first_house", None)
         sun_obj = getattr(subj, "sun", None)
@@ -287,7 +283,6 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
             fmt = format_pos(d_name, obj)
             if fmt: lines.append(fmt)
 
-    # CRITICAL FIX 3: Injecting the new custom points
     if lot_of_spirit:
         lines.append(f"Lot of Spirit in {lot_of_spirit['sign']} {deg_to_d_m(lot_of_spirit['position'])}, in {lot_of_spirit['house']} House")
     if sect:
