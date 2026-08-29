@@ -136,10 +136,12 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
     if not tz_str:
         raise Exception("Could not determine timezone for this location.")
 
+    # CRITICAL FIX 1: Explicitly defining houses_system="W" for Whole Sign
     subject = await asyncio.to_thread(
         AstrologicalSubject,
         name, year, month, day, hour, minute, 
-        lng=location.longitude, lat=location.latitude, tz_str=tz_str, city=city
+        lng=location.longitude, lat=location.latitude, tz_str=tz_str, city=city,
+        houses_system="W"
     )
 
     dt = datetime.datetime(year, month, day, hour, minute)
@@ -149,7 +151,8 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
         AstrologicalSubject,
         name + "_future", dt_future.year, dt_future.month, dt_future.day, 
         dt_future.hour, dt_future.minute, 
-        lng=location.longitude, lat=location.latitude, tz_str=tz_str, city=city
+        lng=location.longitude, lat=location.latitude, tz_str=tz_str, city=city,
+        houses_system="W"
     )
 
     now_utc = datetime.datetime.utcnow()
@@ -174,31 +177,47 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
             m = 0
         return f"{d}°{m:02d}’"
 
+    # CRITICAL FIX 2: Correctly calculating Day/Night Sect and Lot of Spirit
+    def get_sect_and_lots(subj):
+        asc_obj = getattr(subj, "first_house", None)
+        sun_obj = getattr(subj, "sun", None)
+        moon_obj = getattr(subj, "moon", None)
+
+        if not (asc_obj and sun_obj and moon_obj):
+            return None, None, None
+
+        asc_abs = getattr(asc_obj, "abs_pos", 0) if not isinstance(asc_obj, dict) else asc_obj.get("abs_pos", 0)
+        sun_abs = getattr(sun_obj, "abs_pos", 0) if not isinstance(sun_obj, dict) else sun_obj.get("abs_pos", 0)
+        moon_abs = getattr(moon_obj, "abs_pos", 0) if not isinstance(moon_obj, dict) else moon_obj.get("abs_pos", 0)
+
+        sun_h = getattr(sun_obj, "house", "") if not isinstance(sun_obj, dict) else sun_obj.get("house", "")
+        is_day_chart = any(x in str(sun_h) for x in ["7", "8", "9", "10", "11", "12", "Seventh", "Eighth", "Ninth", "Tenth", "Eleventh", "Twelfth"])
+        sect = "Day" if is_day_chart else "Night"
+
+        if is_day_chart:
+            fortune_abs = (asc_abs + moon_abs - sun_abs) % 360
+            spirit_abs = (asc_abs + sun_abs - moon_abs) % 360
+        else:
+            fortune_abs = (asc_abs + sun_abs - moon_abs) % 360
+            spirit_abs = (asc_abs + moon_abs - sun_abs) % 360
+
+        signs = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"]
+
+        fortune = {"sign": signs[int(fortune_abs // 30)], "position": fortune_abs % 30, "abs_pos": fortune_abs, "house": str(int(fortune_abs // 30) + 1)}
+        spirit = {"sign": signs[int(spirit_abs // 30)], "position": spirit_abs % 30, "abs_pos": spirit_abs, "house": str(int(spirit_abs // 30) + 1)}
+
+        return sect, fortune, spirit
+
+    sect, lot_of_fortune, lot_of_spirit = get_sect_and_lots(subject)
+
     def get_obj(subj, attr):
         obj = getattr(subj, attr, None)
         
         if not obj and attr == "part_of_fortune":
-            obj = getattr(subj, "pars_fortuna", None)
+            return lot_of_fortune
             
         if not obj and attr == "true_node":
             obj = getattr(subj, "mean_node", None)
-            
-        if not obj and attr == "part_of_fortune":
-            asc_obj = getattr(subj, "first_house", None)
-            sun_obj = getattr(subj, "sun", None)
-            moon_obj = getattr(subj, "moon", None)
-            
-            if asc_obj and sun_obj and moon_obj:
-                asc_abs = getattr(asc_obj, "abs_pos", 0) if not isinstance(asc_obj, dict) else asc_obj.get("abs_pos", 0)
-                sun_abs = getattr(sun_obj, "abs_pos", 0) if not isinstance(sun_obj, dict) else sun_obj.get("abs_pos", 0)
-                moon_abs = getattr(moon_obj, "abs_pos", 0) if not isinstance(moon_obj, dict) else moon_obj.get("abs_pos", 0)
-                
-                sun_h = getattr(sun_obj, "house", "") if not isinstance(sun_obj, dict) else sun_obj.get("house", "")
-                is_day = any(x in sun_h for x in ["7", "8", "9", "10", "11", "12", "Seventh", "Eighth", "Ninth", "Tenth", "Eleventh", "Twelfth"])
-                
-                f_abs = (asc_abs + moon_abs - sun_abs) % 360 if is_day else (asc_abs + sun_abs - moon_abs) % 360
-                signs = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"]
-                return {"sign": signs[int(f_abs / 30)], "position": f_abs % 30, "abs_pos": f_abs}
 
         if not obj and attr == "vertex":
             v_abs = None
@@ -267,6 +286,12 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
         if obj:
             fmt = format_pos(d_name, obj)
             if fmt: lines.append(fmt)
+
+    # CRITICAL FIX 3: Injecting the new custom points
+    if lot_of_spirit:
+        lines.append(f"Lot of Spirit in {lot_of_spirit['sign']} {deg_to_d_m(lot_of_spirit['position'])}, in {lot_of_spirit['house']} House")
+    if sect:
+        lines.append(f"Chart Sect: {sect} Chart")
 
     angles = [("ASC", "first_house"), ("MC", "tenth_house")]
     for d_name, a_name in angles:
@@ -480,7 +505,6 @@ async def process_sequence_emails():
         genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
         model = genai.GenerativeModel("gemini-3.5-flash-lite")
 
-        # Dynamic Prompts reduced to a single empathetic follow-up
         prompts = {
             1: {
                 "subject": "{name}, a deeper layer of your chart...",
@@ -509,14 +533,12 @@ async def process_sequence_emails():
             
             hours_elapsed = (now_utc - ts).total_seconds() / 3600
 
-            # Keep padding up to 14 to preserve sheet structure safely
             while len(row) < 14:
                 row.append("")
             
             seq1 = row[11]
             step_to_send = 0
 
-            # Trigger Logic: Single follow-up sent anytime 24 hours+ after generation
             if hours_elapsed >= 24 and not seq1:
                 step_to_send = 1
                 col_to_update = 12 
@@ -532,10 +554,7 @@ async def process_sequence_emails():
                     formatted_text = email_text.replace('\n', '<br/>')
                     formatted_text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', formatted_text)
 
-                    # Dynamic HTML construction with unique buttons and names
                     resend.api_key = os.environ.get("RESEND_API_KEY")
-                    
-                    # Ensure name is injected into the subject line
                     subject_line = p_data["subject"].replace("{name}", name)
                     
                     email_html = f"""
