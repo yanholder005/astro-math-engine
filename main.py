@@ -136,7 +136,6 @@ async def get_chart_data(name, year, month, day, hour, minute, city, nation):
     if not tz_str:
         raise Exception("Could not determine timezone for this location.")
 
-    # FIX: online=False prevents Geonames lag
     subject = await asyncio.to_thread(
         AstrologicalSubject,
         name, year, month, day, hour, minute, 
@@ -455,16 +454,18 @@ def background_tasks(data, chart_data, report_text):
         <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;"/>
         <p style="font-family: sans-serif; color: #111;">{formatted_report}</p>
         <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;"/>
-        <h3 style="font-family: sans-serif; color: #111;">Your baseline is established. Are you ready for the full architectural breakdown?</h3>
-        <p style="font-family: sans-serif; color: #333;">We've mapped your surface. Now it's time to dive into the deep end of your chart.</p>
-        <a href="https://yanholder.com/#order-full" style="display:inline-block; padding:10px 20px; background:#000; color:#fff; text-decoration:none; border-radius:100px; font-weight:bold;">Upgrade To The Master Blueprint</a>
+        <h3 style="font-family: sans-serif; color: #111;">Your baseline is established. Now it is time to look at the engine.</h3>
+        <p style="font-family: sans-serif; color: #333;">The free report mapped your surface, but it only revealed 10% of your chart.</p>
+        <p style="font-family: sans-serif; color: #333;">If you want to understand the exact psychological machinery keeping you stuck, the Master Blueprint will hand you the manual. We identify your Chart Ruler, decode your relationship wiring through your 5th and 7th Houses, and expose the subconscious wealth blocks limiting your financial growth. Plus, we map out the exact transits hitting your chart over the next six months so you know exactly what is coming.</p>
+        <br/>
+        <a href="https://yanholder.com/#order-full" style="display:inline-block; padding:10px 20px; background:#000; color:#fff; text-decoration:none; border-radius:100px; font-weight:bold;">Unlock my full astro report</a>
         """
 
         resend.Emails.send({
             "from": "Yan Holder <yan@yanholder.com>",
             "reply_to": "yan@yanholder.com", 
             "to": [data.email],
-            "subject": f"{data.name}, your astrology report is ready",
+            "subject": f"{data.name}, here is a copy of your astrological report.",
             "html": email_html
         })
     except Exception as e:
@@ -501,18 +502,8 @@ async def process_sequence_emails():
 
         buyer_emails = {row[1].strip().lower() for row in buyers if len(row) > 1}
         now_utc = datetime.datetime.utcnow()
-
-        genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
-        model = genai.GenerativeModel("gemini-3.5-flash-lite")
-
-        prompts = {
-            1: {
-                "subject": "{name}, a deeper layer of your chart...",
-                "sys": "You are an elite, empathetic clinical astrologer writing a single follow-up email. Write exactly 2 short paragraphs. NO greetings, NO sign-offs, NO subject lines in the output. Tone: insightful, warm, strategically valuable, but NOT aggressive or fear-mongering. Instruction: Look at their chart's core tension (like Chiron, 12th House, or a major aspect) and gently point out a specific pattern of friction or self-sabotage they might be experiencing right now. Do NOT name the astrological placement directly. Offer a reassuring but firm insight on why bringing awareness to this pattern is the key to their growth.",
-                "pre_cta": "There is a deeper architecture to your chart that holds the blueprint for navigating this. When you are ready to explore it, I've compiled everything for you.",
-                "cta_text": "Unlock Your Master Blueprint"
-            }
-        }
+        
+        cells_to_update = []
 
         for i, row in enumerate(leads):
             if len(row) < 11 or not row[10]:
@@ -520,8 +511,10 @@ async def process_sequence_emails():
             
             name = row[0]
             email = row[5].strip().lower()
-            chart_data = row[7]
             timestamp_str = row[10]
+            
+            # Index 8 is the original free report text from column 9
+            report_text = row[8] if len(row) > 8 else "" 
 
             if email in buyer_emails:
                 continue
@@ -533,37 +526,60 @@ async def process_sequence_emails():
             
             hours_elapsed = (now_utc - ts).total_seconds() / 3600
 
+            # Ensure row length supports sequence tracking up to column 13 (M)
             while len(row) < 14:
                 row.append("")
             
             seq1 = row[11]
+            seq2 = row[12]
+            
             step_to_send = 0
+            col_to_update = 0
 
-            if hours_elapsed >= 24 and not seq1:
+            # 44 Hour Logic (20 hours after 24h limit)
+            if hours_elapsed >= 44 and seq1 == "SENT" and not seq2:
+                step_to_send = 2
+                col_to_update = 13
+            # 24 Hour Logic
+            elif hours_elapsed >= 24 and not seq1:
                 step_to_send = 1
-                col_to_update = 12 
+                col_to_update = 12
 
             if step_to_send > 0:
-                p_data = prompts[step_to_send]
-                user_prompt = f"User Name: {name}\nChart Data:\n{chart_data}"
-                
                 try:
-                    response = await model.generate_content_async(f"{p_data['sys']}\n\n{user_prompt}")
-                    email_text = response.text
-                    
-                    formatted_text = email_text.replace('\n', '<br/>')
-                    formatted_text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', formatted_text)
-
                     resend.api_key = os.environ.get("RESEND_API_KEY")
-                    subject_line = p_data["subject"].replace("{name}", name)
                     
-                    email_html = f"""
-                    <p style="font-family: sans-serif; color: #111;">Hi {name},</p>
-                    <p style="font-family: sans-serif; color: #111;">{formatted_text}</p>
-                    <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;"/>
-                    <h3 style="font-family: sans-serif; color: #111;">{p_data['pre_cta']}</h3>
-                    <a href="https://yanholder.com/#order-full" style="display:inline-block; padding:10px 20px; background:#000; color:#fff; text-decoration:none; border-radius:100px; font-weight:bold;">{p_data['cta_text']}</a>
-                    """
+                    if step_to_send == 1:
+                        formatted_report = report_text.replace('\n', '<br/>')
+                        formatted_report = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', formatted_report)
+                        subject_line = f"{name}, Action required: Your chart file will be erased tomorrow"
+                        
+                        email_html = f"""
+                        <p style="font-family: sans-serif; color: #111;">Hi {name},</p>
+                        <p style="font-family: sans-serif; color: #111;">I am reaching out because your file is scheduled for deletion in exactly 24 hours.</p>
+                        <p style="font-family: sans-serif; color: #111;">We wipe all birth data and baseline reports from our servers 48 hours after generation to protect your privacy. Once the timer runs out, your full diagnostic will be lost permanently.</p>
+                        <p style="font-family: sans-serif; color: #111;">You already took the time to generate the free reading. Stopping here means leaving the actual answers behind. The baseline reading barely scratched the surface. The full 15-page report exposes the primordial engine steering your life. It identifies your karmic blind spots, decodes the actual reason your past relationships failed, and hands you the mathematical formula for your financial growth.</p>
+                        <p style="font-family: sans-serif; color: #111;">Leaving that kind of clarity on the table when it is sitting right in front of you is a massive missed opportunity. You have nothing to lose but the blind spot.</p>
+                        <p style="font-family: sans-serif; color: #111;">Here is a backup copy of your baseline report for your records before it disappears:</p>
+                        <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;"/>
+                        <p style="font-family: sans-serif; color: #111;">{formatted_report}</p>
+                        <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;"/>
+                        <h3 style="font-family: sans-serif; color: #111;">You have 24 hours to secure your 15-page Master Blueprint and 6-month forecast.</h3>
+                        <a href="https://yanholder.com/#order-full" style="display:inline-block; padding:10px 20px; background:#000; color:#fff; text-decoration:none; border-radius:100px; font-weight:bold;">Unlock my full astro report</a>
+                        """
+                    
+                    elif step_to_send == 2:
+                        subject_line = f"{name}, Final notice: Wiping your chart data"
+                        
+                        email_html = f"""
+                        <p style="font-family: sans-serif; color: #111;">Hi {name},</p>
+                        <p style="font-family: sans-serif; color: #111;">This is the last time you will hear from me.</p>
+                        <p style="font-family: sans-serif; color: #111;">Your chart data decays in a few hours. After that, your file is permanently wiped from our system and we will not email you again.</p>
+                        <p style="font-family: sans-serif; color: #111;">If you want the full 15-page clinical breakdown of your relationship wiring, wealth blocks, and psychological shadow, you need to grab it right now.</p>
+                        <p style="font-family: sans-serif; color: #111;">I will not try to convince you further. You either want the non-delusional truth about your life trajectory or you do not.</p>
+                        <br/>
+                        <a href="https://yanholder.com/#order-full" style="display:inline-block; padding:10px 20px; background:#000; color:#fff; text-decoration:none; border-radius:100px; font-weight:bold;">Unlock my full astro report</a>
+                        """
 
                     resend.Emails.send({
                         "from": "Yan Holder <yan@yanholder.com>",
@@ -573,13 +589,25 @@ async def process_sequence_emails():
                         "html": email_html
                     })
                     
-                    def update_seq_cell(): leads_sheet.update_cell(i + 1, col_to_update, "SENT")
-                    exponential_backoff_retry(update_seq_cell)
+                    # Track successful send for batch updating the Google Sheet
+                    cells_to_update.append(gspread.Cell(row=i + 1, col=col_to_update, value="SENT"))
                     
-                    await asyncio.sleep(2)
+                    # Rate limiting safeguard: Never exceed Resend API limits
+                    await asyncio.sleep(0.5) 
+                    
+                    # Batch Update in Chunks of 20 to protect Google Sheets Quota
+                    if len(cells_to_update) >= 20:
+                        def batch_update(): leads_sheet.update_cells(cells_to_update)
+                        exponential_backoff_retry(batch_update)
+                        cells_to_update.clear()
                     
                 except Exception as ex:
                     print(f"Failed to process sequence step {step_to_send} for {email}: {ex}")
+
+        # Final Batch Update for any remaining cells
+        if cells_to_update:
+            def batch_update_final(): leads_sheet.update_cells(cells_to_update)
+            exponential_backoff_retry(batch_update_final)
 
     except Exception as e:
         print(f"Sequence Scanner Error: {e}")
