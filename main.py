@@ -454,11 +454,11 @@ def background_tasks(data, chart_data, report_text):
         <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;"/>
         <p style="font-family: sans-serif; color: #111;">{formatted_report}</p>
         <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;"/>
-        <h3 style="font-family: sans-serif; color: #111;">Your baseline is established. Now it is time to look at the engine.</h3>
+        <h3 style="font-family: sans-serif; color: #111;">Your baseline is established. Now it is time to look deeper.</h3>
         <p style="font-family: sans-serif; color: #333;">The free report mapped your surface, but it only revealed 10% of your chart.</p>
-        <p style="font-family: sans-serif; color: #333;">If you want to understand the exact psychological machinery keeping you stuck, the Master Blueprint will hand you the manual. We identify your Chart Ruler, decode your relationship wiring through your 5th and 7th Houses, and expose the subconscious wealth blocks limiting your financial growth. Plus, we map out the exact transits hitting your chart over the next six months so you know exactly what is coming.</p>
+        <p style="font-family: sans-serif; color: #333;">If you want to understand the exact psychological machinery keeping you stuck, the Full Astro Report will hand you the manual. This full 15-page report exposes the exact psychological machinery quietly keeping you stuck, and hands you the non-delusional blueprint to dismantle it. Written with the precision of a clinical psychologist and the depth of an evolutionary astrologer, this is the definitive manual for your life’s trajectory. Plus, after checkout you get to ask as many additional questions as you like and the report will also map out the exact transits hitting your chart over the next six months so you know exactly what is coming.</p>
         <br/>
-        <a href="https://yanholder.com/#order-full" style="display:inline-block; padding:10px 20px; background:#000; color:#fff; text-decoration:none; border-radius:100px; font-weight:bold;">Unlock my full astro report</a>
+        <a href="https://yanholder.com/#order-full" style="display:inline-block; padding:10px 20px; background:#000; color:#fff; text-decoration:none; border-radius:100px; font-weight:bold;">Unlock My Full Astro Report</a>
         """
 
         resend.Emails.send({
@@ -564,8 +564,8 @@ async def process_sequence_emails():
                         <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;"/>
                         <p style="font-family: sans-serif; color: #111;">{formatted_report}</p>
                         <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;"/>
-                        <h3 style="font-family: sans-serif; color: #111;">You have 24 hours to secure your 15-page Master Blueprint and 6-month forecast.</h3>
-                        <a href="https://yanholder.com/#order-full" style="display:inline-block; padding:10px 20px; background:#000; color:#fff; text-decoration:none; border-radius:100px; font-weight:bold;">Unlock my full astro report</a>
+                        <h3 style="font-family: sans-serif; color: #111;">You have 24 hours to secure your 15-page Personal Astro Report and 6-month forecast.</h3>
+                        <a href="https://yanholder.com/#order-full" style="display:inline-block; padding:10px 20px; background:#000; color:#fff; text-decoration:none; border-radius:100px; font-weight:bold;">Unlock My Full Astro Report</a>
                         """
                     
                     elif step_to_send == 2:
@@ -578,7 +578,7 @@ async def process_sequence_emails():
                         <p style="font-family: sans-serif; color: #111;">If you want the full 15-page clinical breakdown of your relationship wiring, wealth blocks, and psychological shadow, you need to grab it right now.</p>
                         <p style="font-family: sans-serif; color: #111;">I will not try to convince you further. You either want the non-delusional truth about your life trajectory or you do not.</p>
                         <br/>
-                        <a href="https://yanholder.com/#order-full" style="display:inline-block; padding:10px 20px; background:#000; color:#fff; text-decoration:none; border-radius:100px; font-weight:bold;">Unlock my full astro report</a>
+                        <a href="https://yanholder.com/#order-full" style="display:inline-block; padding:10px 20px; background:#000; color:#fff; text-decoration:none; border-radius:100px; font-weight:bold;">Unlock My Full Astro Report</a>
                         """
 
                     resend.Emails.send({
