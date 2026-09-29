@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-kerykeion
+kerykeion==5.12.9
 geopy
 timezonefinder
 google-generativeai
