@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from kerykeion import AstrologicalSubject
 from geopy.geocoders import ArcGIS
 from timezonefinder import TimezoneFinder
-import google.generativeai as genai
+from google import genai  # <-- UPDATED IMPORT
 import resend
 import gspread
 from google.oauth2.service_account import Credentials
@@ -684,19 +684,27 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
         chart_data = await get_chart_data(data.name, year, month, day, hour, minute, data.city, data.nation)
 
         system_prompt = await get_system_prompt()
-        genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
         
-        model = genai.GenerativeModel("gemini-3.5-flash-lite") 
+        # --- MIGRATED API CLIENT CREATION ---
+        client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
         
         cats_str = ", ".join(data.categories)
         current_date_str = now_date.strftime("%B %d, %Y")
         
         user_prompt = f"User Name: {data.name}\nDate of Birth: {formatted_dob}\nCurrent Date: {current_date_str}\nCurrent Age: {age}\nCurrent Profection Year: {profection_house}\nFocus Areas: {cats_str}\nQuestion: {data.question}\nChart Data:\n{chart_data}"
         
+        # We merge the system prompt and the user input to emulate the old behavior
+        full_input = f"{system_prompt}\n\n{user_prompt}"
+        
         report_text = ""
         for attempt in range(3):
             try:
-                response = await model.generate_content_async(f"{system_prompt}\n\n{user_prompt}")
+                # --- MIGRATED GENERATE CALL ---
+                response = await asyncio.to_thread(
+                    client.models.generate_content,
+                    model="gemini-3.5-flash-lite", 
+                    contents=full_input,
+                )
                 report_text = response.text
                 break
             except Exception as ai_err:
