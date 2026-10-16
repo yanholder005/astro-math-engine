@@ -1,4 +1,5 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from kerykeion import AstrologicalSubject
@@ -16,6 +17,15 @@ import urllib.request
 import datetime
 import random
 import re
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime as _PreferenceDateTime, timezone as _PreferenceTimezone
+import base64
+import hashlib
+import hmac
+import html
+import threading
+from urllib.parse import urlencode, urlsplit
 
 app = FastAPI()
 
@@ -32,7 +42,207 @@ tf = TimezoneFinder()
 
 PROMPT_CACHE = {"text": "", "last_fetched": 0}
 PPP_CACHE = {"prices": {}, "base_price_cents": 0, "last_fetched": 0}
-GSPREAD_CLIENT = None  
+GSPREAD_CLIENT = None
+SEQUENCE_LOCK = asyncio.Lock()
+
+# --- MARKETING UNSUBSCRIBE HELPERS ---
+# Kept in this file so deployment replaces only the existing main.py.
+SHEET_NAME = "MarketingOptOuts"
+SHEET_HEADER = ["key_id", "subscriber_id", "unsubscribed_at_utc"]
+# Coordinates sends and opt-outs within ONE Python process only.
+PREFERENCES_LOCK = threading.RLock()
+PART = r"[A-Za-z0-9_-]{43}"
+TOKEN_PATTERN = re.compile(rf"v1\.([A-Za-z0-9_-]{{1,24}})\.({PART})\.({PART})")
+
+
+class PreferenceError(Exception):
+    """Fail closed for marketing, without exposing tokens or secrets in logs."""
+
+
+class InvalidToken(PreferenceError):
+    pass
+
+
+@contextmanager
+def preference_lock():
+    if not PREFERENCES_LOCK.acquire(timeout=10):
+        raise PreferenceError("Marketing preferences are busy; retry later")
+    try:
+        yield
+    finally:
+        PREFERENCES_LOCK.release()
+
+
+def normalize_email(email):
+    value = email.strip().lower()
+    if not value or len(value) > 320 or value.count("@") != 1 or any(c.isspace() for c in value):
+        raise PreferenceError("Invalid recipient address")
+    return value
+
+
+def _mac(key, value):
+    return base64.urlsafe_b64encode(hmac.new(key.encode(), value.encode(), hashlib.sha256).digest()).rstrip(b"=").decode()
+
+
+@dataclass(frozen=True)
+class UnsubscribeConfig:
+    base_url: str
+    keys: dict
+    active_key_id: str
+
+    @classmethod
+    def from_values(cls, base_url, keys_json, active_key_id):
+        try:
+            parsed = urlsplit(base_url or "")
+            keys = json.loads(keys_json or "")
+        except (ValueError, TypeError):
+            raise PreferenceError("Unsubscribe configuration is incomplete") from None
+        if (parsed.scheme != "https" or not parsed.hostname or "." not in parsed.hostname
+                or parsed.username or parsed.password or parsed.port
+                or parsed.path not in ("", "/") or parsed.query or parsed.fragment):
+            raise PreferenceError("Unsubscribe base URL must be a fixed public HTTPS origin")
+        if (not isinstance(keys, dict) or not 1 <= len(keys) <= 5
+                or any(not isinstance(k, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,24}", k)
+                       or not isinstance(v, str) or len(v.encode()) < 32 for k, v in keys.items())
+                or active_key_id not in keys):
+            raise PreferenceError("Unsubscribe signing-key configuration is incomplete")
+        # Content-addressed IDs make accidental replacement under an existing ID
+        # invalid, rather than silently losing stored suppression matches.
+        if any(k != hashlib.sha256(v.encode()).hexdigest()[:24] for k, v in keys.items()):
+            raise PreferenceError("Each key ID must match its secret fingerprint")
+        return cls(base_url.rstrip("/"), keys, active_key_id)
+
+    def identity(self, email, key_id):
+        return _mac(self.keys[key_id], "marketing-subject:v1\0" + normalize_email(email))
+
+    def token(self, email):
+        key_id = self.active_key_id
+        unsigned = f"v1.{key_id}.{self.identity(email, key_id)}"
+        return unsigned + "." + _mac(self.keys[key_id], "marketing-unsubscribe:v1\0" + unsigned)
+
+    def validate(self, token):
+        match = TOKEN_PATTERN.fullmatch(token or "")
+        if not match or match[1] not in self.keys:
+            raise InvalidToken("Invalid unsubscribe link")
+        key_id, subscriber_id, signature = match.groups()
+        unsigned = f"v1.{key_id}.{subscriber_id}"
+        expected = _mac(self.keys[key_id], "marketing-unsubscribe:v1\0" + unsigned)
+        if not hmac.compare_digest(expected, signature):
+            raise InvalidToken("Invalid unsubscribe link")
+        return key_id, subscriber_id
+
+    def url(self, email):
+        return self.base_url + "/unsubscribe?" + urlencode({"token": self.token(email)})
+
+
+def email_preferences(config, email):
+    url = config.url(email)
+    footer = ('\n<p style="font-family:Arial,sans-serif;font-size:12px;line-height:18px;'
+              'margin-top:32px;color:#666;">'
+              f'<a href="{html.escape(url, quote=True)}" style="color:#666;text-decoration:underline;">'
+              'Unsubscribe</a></p>')
+    headers = {"List-Unsubscribe": f"<{url}>", "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"}
+    return footer, headers
+
+
+class SheetSuppressionStore:
+    """Append-only suppression, never resubscribe. Duplicate rows are harmless.
+
+    A successful acknowledgement follows a confirmed read/write. An uncertain
+    append is reconciled by re-reading before retry; concurrent multi-process
+    appends can still duplicate a row, but cannot clear a suppression.
+    """
+    def __init__(self, worksheet, sleep=time.sleep):
+        self.worksheet = worksheet
+        self.sleep = sleep
+
+    def _identities(self):
+        try:
+            rows = self.worksheet.get_all_values()
+        except Exception:
+            raise PreferenceError("Marketing suppression storage is unavailable") from None
+        if not rows or rows[0] != SHEET_HEADER:
+            raise PreferenceError("MarketingOptOuts schema is missing or invalid")
+        found = set()
+        for row in rows[1:]:
+            if not row or not any(row):
+                continue
+            if len(row) != 3 or not re.fullmatch(r"[A-Za-z0-9_-]{1,24}", row[0]) or not re.fullmatch(PART, row[1]) or not row[2]:
+                raise PreferenceError("MarketingOptOuts contains a malformed row")
+            found.add((row[0], row[1]))
+        return found
+
+    def is_suppressed(self, config, email):
+        identities = self._identities()  # Fresh read, deliberately no cache.
+        if any(key_id not in config.keys for key_id, _ in identities):
+            raise PreferenceError("An existing suppression key is missing; retain old keys")
+        return any((key_id, config.identity(email, key_id)) in identities for key_id in config.keys)
+
+    def send_if_allowed(self, config, email, send):
+        with preference_lock():
+            if self.is_suppressed(config, email):
+                return False
+            send()  # Keep same-process opt-out from committing between check/send.
+            return True
+
+    def suppress(self, key_id, subscriber_id):
+        with preference_lock():
+            for attempt in range(3):
+                try:
+                    if (key_id, subscriber_id) in self._identities():
+                        return
+                    timestamp = _PreferenceDateTime.now(_PreferenceTimezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+                    self.worksheet.append_row([key_id, subscriber_id, timestamp], value_input_option="RAW")
+                    return
+                except Exception:
+                    if attempt == 2:
+                        raise PreferenceError("Could not confirm marketing opt-out; retry later") from None
+                    self.sleep(0.25 * (2 ** attempt))
+
+
+def confirmation_page(token):
+    # Same-origin relative form action; no third-party assets or tracking.
+    action = "/unsubscribe?" + urlencode({"token": token})
+    return ('<!doctype html><html lang="en"><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<title>Email preferences</title><body style="font-family:Arial,sans-serif;max-width:32rem;margin:4rem auto;padding:1rem;">'
+            '<h1>Stop promotional follow-ups?</h1>'
+            '<p>You will still receive reports you request and purchase.</p>'
+            f'<form method="post" action="{html.escape(action, quote=True)}">'
+            '<button name="confirm" value="unsubscribe" type="submit">Unsubscribe</button>'
+            '</form></body></html>')
+
+
+def parse_unsubscribe_form(content_type, body):
+    """Accept the two RFC 8058 encodings, plus the human confirmation form."""
+    from email import policy
+    from email.parser import BytesParser
+    from urllib.parse import parse_qsl
+
+    if len(body) > 4096 or "\r" in content_type or "\n" in content_type:
+        raise ValueError("Invalid form")
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    if media_type == "application/x-www-form-urlencoded":
+        pairs = parse_qsl(body.decode("utf-8"), keep_blank_values=True, strict_parsing=True, max_num_fields=2)
+    elif media_type == "multipart/form-data":
+        message = BytesParser(policy=policy.default).parsebytes(
+            b"Content-Type: " + content_type.encode("ascii") + b"\r\nMIME-Version: 1.0\r\n\r\n" + body)
+        if not message.is_multipart() or message.defects:
+            raise ValueError("Invalid form")
+        pairs = []
+        for part in message.iter_parts():
+            if part.is_multipart() or part.get_content_disposition() != "form-data" or part.get_filename() or part.defects:
+                raise ValueError("Invalid form")
+            pairs.append((part.get_param("name", header="content-disposition"),
+                          part.get_payload(decode=True).decode("utf-8")))
+    else:
+        raise ValueError("Unsupported form type")
+    if pairs == [("List-Unsubscribe", "One-Click")]:
+        return "one-click"
+    if pairs == [("confirm", "unsubscribe")]:
+        return "human"
+    raise ValueError("Invalid unsubscribe form")
+
 
 # --- MODELS ---
 class BirthData(BaseModel):
@@ -461,12 +671,22 @@ def background_tasks(data, chart_data, report_text):
         <a href="https://yanholder.com/#order-full" style="display:inline-block; padding:10px 20px; background:#000; color:#fff; text-decoration:none; border-radius:100px; font-weight:bold;">Unlock My Full Astro Report</a>
         """
 
+        # Deliver the requested free report even if preferences are unavailable.
+        # Keep the existing requested-report email copy, including its upsell.
+        delivery_headers = {}
+        try:
+            footer, delivery_headers = email_preferences(get_unsubscribe_config(), data.email)
+            email_html += footer
+        except Exception:
+            print("Free report preferences unavailable; report delivery remains enabled.")
+
         resend.Emails.send({
             "from": "Yan Holder <yan@yanholder.com>",
             "reply_to": "yan@yanholder.com", 
             "to": [data.email],
             "subject": f"{data.name}, here is a copy of your astrological report.",
-            "html": email_html
+            "html": email_html,
+            "headers": delivery_headers
         })
     except Exception as e:
         print(f"Email Error: {e}")
@@ -489,9 +709,44 @@ def background_update_sheet(email, extra_info):
         print(f"Update Sheet Error: {e}")
         send_admin_error_alert(f"Failed to update Google Sheet with extra info: {e}", {"email": email})
 
+# --- MARKETING PREFERENCES (does not suppress requested report delivery) ---
+def get_unsubscribe_config():
+    return UnsubscribeConfig.from_values(
+        os.environ.get("UNSUBSCRIBE_BASE_URL"),
+        os.environ.get("UNSUBSCRIBE_KEYS_JSON"),
+        os.environ.get("UNSUBSCRIBE_ACTIVE_KEY_ID"),
+    )
+
+
+def get_suppression_store():
+    # Isolated client: do not change the shared client's behavior for report
+    # logging, prompt reads, payment checks, or other existing operations.
+    creds_dict = json.loads(os.environ.get("GOOGLE_CREDENTIALS_JSON"))
+    creds = Credentials.from_service_account_info(
+        creds_dict, scopes=["https://www.googleapis.com/auth/spreadsheets"]
+    )
+    client = gspread.authorize(creds)
+    # Bound this client's connect/read inactivity, not total wall-clock time.
+    client.set_timeout((5, 15))
+    worksheet = client.open_by_key(os.environ.get("GOOGLE_SHEET_ID")).worksheet(SHEET_NAME)
+    return SheetSuppressionStore(worksheet)
+
+
 # --- THE AUTOMATED EMAIL SEQUENCE WORKER ---
 async def process_sequence_emails():
+    # Disabled by default until the manual setup and controlled verification pass.
+    if os.environ.get("MARKETING_EMAILS_ENABLED", "false").lower() != "true":
+        return
+    if SEQUENCE_LOCK.locked():
+        return
+    async with SEQUENCE_LOCK:
+        await _process_sequence_emails()
+
+
+async def _process_sequence_emails():
     try:
+        unsubscribe_config = get_unsubscribe_config()
+        suppression_store = await asyncio.to_thread(get_suppression_store)
         client = get_gspread_client()
         sheet_id = os.environ.get("GOOGLE_SHEET_ID")
         leads_sheet = client.open_by_key(sheet_id).worksheet("Sheet1")
@@ -581,19 +836,35 @@ async def process_sequence_emails():
                         <a href="https://yanholder.com/#order-full" style="display:inline-block; padding:10px 20px; background:#000; color:#fff; text-decoration:none; border-radius:100px; font-weight:bold;">Unlock My Full Astro Report</a>
                         """
 
-                    resend.Emails.send({
+                    footer, unsubscribe_headers = email_preferences(unsubscribe_config, email)
+                    payload = {
                         "from": "Yan Holder <yan@yanholder.com>",
                         "reply_to": "yan@yanholder.com",
                         "to": [email],
                         "subject": subject_line,
-                        "html": email_html
-                    })
+                        "html": email_html + footer,
+                        "headers": unsubscribe_headers
+                    }
+                    # Fresh, fail-closed suppression read immediately before send.
+                    try:
+                        sent = await asyncio.to_thread(
+                            suppression_store.send_if_allowed,
+                            unsubscribe_config, email, lambda: resend.Emails.send(payload)
+                        )
+                    except PreferenceError:
+                        # Do not hammer a failing/quota-limited store for every lead.
+                        # Break, then persist any successful send markers below.
+                        print("Marketing scanner paused: suppression check failed.")
+                        break
+                    finally:
+                        # Pace every attempt, including ambiguous provider errors.
+                        # Otherwise failed sends can hammer the suppression store.
+                        await asyncio.sleep(1.5)
+                    if not sent:
+                        continue
                     
                     # Track successful send for batch updating the Google Sheet
                     cells_to_update.append(gspread.Cell(row=i + 1, col=col_to_update, value="SENT"))
-                    
-                    # Rate limiting safeguard: Never exceed Resend API limits
-                    await asyncio.sleep(0.5) 
                     
                     # Batch Update in Chunks of 20 to protect Google Sheets Quota
                     if len(cells_to_update) >= 20:
@@ -613,6 +884,59 @@ async def process_sequence_emails():
         print(f"Sequence Scanner Error: {e}")
 
 # --- ROUTES ---
+PREFERENCE_RESPONSE_HEADERS = {
+    "Cache-Control": "no-store",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+    "X-Robots-Tag": "noindex, nofollow",
+    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+}
+
+
+@app.get("/unsubscribe")
+async def unsubscribe_page(token: str = ""):
+    # Link scanners and previews cannot change subscription state via GET.
+    try:
+        get_unsubscribe_config().validate(token)
+    except InvalidToken:
+        return PlainTextResponse("This unsubscribe link is invalid.", status_code=400, headers=PREFERENCE_RESPONSE_HEADERS)
+    except Exception:
+        return PlainTextResponse("Email preferences are temporarily unavailable. Please retry later.", status_code=503, headers=PREFERENCE_RESPONSE_HEADERS)
+    return HTMLResponse(confirmation_page(token), headers=PREFERENCE_RESPONSE_HEADERS)
+
+
+@app.post("/unsubscribe")
+async def unsubscribe_submit(request: Request, token: str = ""):
+    try:
+        identity = get_unsubscribe_config().validate(token)
+    except InvalidToken:
+        return PlainTextResponse("This unsubscribe link is invalid.", status_code=400, headers=PREFERENCE_RESPONSE_HEADERS)
+    except Exception:
+        return PlainTextResponse("Email preferences are temporarily unavailable. Please retry later.", status_code=503, headers=PREFERENCE_RESPONSE_HEADERS)
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > 4096:
+            return PlainTextResponse("Form too large.", status_code=413, headers=PREFERENCE_RESPONSE_HEADERS)
+    try:
+        mode = parse_unsubscribe_form(request.headers.get("content-type", ""), bytes(body))
+    except (ValueError, UnicodeError, TypeError):
+        return PlainTextResponse("Invalid unsubscribe form.", status_code=400, headers=PREFERENCE_RESPONSE_HEADERS)
+    try:
+        def persist():
+            get_suppression_store().suppress(*identity)
+        await asyncio.to_thread(persist)
+    except Exception:
+        return PlainTextResponse("We could not save your preference. Please retry later.", status_code=503, headers=PREFERENCE_RESPONSE_HEADERS)
+    if mode == "one-click":
+        return Response(status_code=200, headers=PREFERENCE_RESPONSE_HEADERS)
+    return HTMLResponse(
+        '<!doctype html><html lang="en"><meta charset="utf-8"><title>Unsubscribed</title>'
+        '<body><h1>You are unsubscribed.</h1><p>Promotional follow-ups are stopped. '
+        'Reports you request or purchase are unaffected.</p></body></html>',
+        headers=PREFERENCE_RESPONSE_HEADERS,
+    )
+
 @app.get("/")
 async def health_check(): return {"status": "awake"}
 
@@ -723,3 +1047,4 @@ async def generate_diagnostic(data: DiagnosticRequest, bg_tasks: BackgroundTasks
 async def update_lead(data: UpdateRequest, bg_tasks: BackgroundTasks):
     bg_tasks.add_task(background_update_sheet, data.email, data.additional_info)
     return {"success": True}
+
